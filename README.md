@@ -1,129 +1,324 @@
-# Automatic Pedicle Screw Planning (CT-Based)
+# Pedicle Screw Planning using CT Scans
 
 ## Overview
 
-This project implements a geometry-driven pipeline for automatic pedicle screw planning from CT scans. The system operates on segmented vertebrae and computes safe screw trajectories using PCA-based anatomical alignment and Euclidean distance transform (EDT)–based clearance analysis.
+This project implements a **geometry-based pedicle screw planning system** for lumbar vertebrae using CT scan data.
 
-The method is fully deterministic and does not require training.
+The system automatically:
 
-## Input
+* Segments lumbar vertebrae (L1–L5)
+* Detects pedicle centers
+* Computes safe screw trajectories
+* Selects optimal screw diameter and length
+* Calculates safety margins
+* Generates a 3D surgical-style visualization
 
-* CT volume (NIfTI)
-* Vertebra segmentation mask (e.g., generated using TotalSegmentator)
+The algorithm is fully automatic and works directly on **3D CT scan data (NIfTI format).**
 
-## Pipeline Overview
+This project is intended for **research and educational purposes.**
 
-### 1. Vertebra Segmentation
+## Features
 
-A target vertebra (e.g., L1–L5) is extracted from the segmentation mask.
+### Automatic Vertebra Segmentation
 
-The segmentation defines the bone region used for all geometric computations.
+Lumbar vertebrae (L1–L5) are segmented using:
 
-### 2. PCA-Based Anatomical Frame Estimation
+* **TotalSegmentator**
 
-Principal Component Analysis (PCA) is applied to the vertebral voxel coordinates.
+Each vertebra is extracted separately and used for planning.
 
-This produces:
+### Automatic Pedicle Detection
 
-* PC1: Largest variance direction
-* PC2: Second largest variance direction
-* PC3: Smallest variance direction
+The system automatically finds:
 
-These principal components define an orthogonal vertebra-centered coordinate system.
+* Left pedicle center
+* Right pedicle center
 
-The Left–Right (LR) axis is identified from the PCA frame and used to split the vertebra into left and right halves.
+It selects the **thickest bone region** inside each pedicle.
 
-Purpose:
+### Automatic Screw Planning
 
-* Establish a consistent anatomical reference frame
-* Enable side-specific trajectory planning
+For each vertebra (L1–L5), the algorithm:
 
-### 3. Euclidean Distance Transform (EDT)
+* Tests multiple screw diameters
+* Tests multiple directions
+* Computes screw length
+* Checks if screw stays inside bone
+* Calculates safety margin
 
-A 3D Euclidean Distance Transform is computed on the vertebral mask.
+Then selects the **best safe screw trajectory.**
 
-For each voxel inside the bone, EDT provides:
+### Safety Verification
 
-Distance to the nearest cortical boundary.
+The planner ensures:
 
-This distance field is used to:
+* Screw cylinder remains inside bone
+* Minimum screw length requirement
+* Bone thickness is sufficient
+* Cortical breach is avoided
 
-* Identify interior safe regions
-* Perform cortical breach checking
-* Score trajectory clearance
+Safety margin is calculated as:
 
-The distance transform is computed once per vertebra and reused for all trajectory evaluations.
+Safety Margin = Bone Thickness − Screw Radius
 
-### 4. Candidate Interior Voxel Selection
+### 3D Visualization
 
-Candidate seed voxels are selected based on:
+The system produces a 3D surgical-style visualization showing:
 
-* High EDT values (deep interior regions)
-* Spatial constraints within the pedicle region
+* Lumbar vertebrae surface
+* Pedicle screws
+* Entry points
 
-These candidates represent potential screw corridor centers.
+Visualization is generated using:
 
-### 5. Trajectory Optimization
+* Plotly 3D rendering
 
-For each candidate voxel:
+## Technologies Used
 
-1. Generate yaw and pitch angle variations.
-2. Construct a line representing a potential screw trajectory.
-3. Sample points along the trajectory.
-4. Evaluate EDT values along the path.
+### Programming Language
 
-A trajectory is considered valid if:
+* Python 3.10+
 
-EDT(sampled_point) > screw_radius
-for all sampled points.
+### Libraries
 
-This ensures the screw remains fully inside bone.
+#### Medical Imaging
 
-### 6. Trajectory Selection
+* nibabel
+* TotalSegmentator
 
-Among all valid trajectories:
+#### Scientific Computing
 
-* Compute a clearance score (e.g., minimum EDT along path).
-* Select the trajectory that maximizes clearance.
-* Reject candidates that result in cortical breach.
+* numpy
+* scipy
+* scikit-learn
 
-### 7. Entry Point Determination
+#### 3D Processing
 
-Once the optimal trajectory is selected:
+* scikit-image
 
-* Trace the trajectory posteriorly.
-* Identify the intersection with the posterior cortical surface.
-* Define this intersection as the screw entry point.
+#### Visualization
+
+* plotly
+
+## Project Pipeline
+
+### Step 1 — Input CT Scan
+
+Input must be a CT scan in **NIfTI format (.nii or .nii.gz)**.
+
+Example:
+
+```
+case_0000.nii
+```
+
+### Step 2 — Vertebra Segmentation
+
+TotalSegmentator extracts:
+
+* L1
+* L2
+* L3
+* L4
+* L5
+
+Output example:
+
+```
+vertebrae_L1.nii.gz
+vertebrae_L2.nii.gz
+vertebrae_L3.nii.gz
+vertebrae_L4.nii.gz
+vertebrae_L5.nii.gz
+```
+
+### Step 3 — Coordinate System Estimation
+
+The system automatically estimates vertebra orientation:
+
+* Superior–Inferior axis
+* Left–Right axis
+* Anterior–Posterior axis
+
+This allows the planner to work on rotated spines.
+
+### Step 4 — Pedicle Center Detection
+
+The algorithm:
+
+1. Finds middle vertebra region
+2. Selects posterior region
+3. Splits left and right
+4. Chooses thickest bone region
+
+### Step 5 — Screw Optimization
+
+The system:
+
+* Tests many directions
+* Tests many diameters
+* Computes safety margin
+* Computes screw length
+
+Best screw is selected automatically.
+
+### Step 6 — Surface Mesh Generation
+
+Marching Cubes algorithm is used to generate a smooth 3D mesh of vertebrae.
+
+### Step 7 — Visualization
+
+Final output includes:
+
+* Vertebra surface
+* Screw cylinders
+* Entry points
+
+## How to Run Locally
+
+### Step 1 — Install Python
+
+Install Python 3.10 or newer.
+
+Check version:
+
+```
+python --version
+```
+
+### Step 2 — Create Virtual Environment
+
+Create environment:
+
+```
+python -m venv pedicle_env
+```
+
+Activate environment:
+
+#### Windows
+
+```
+pedicle_env\Scripts\activate
+```
+
+#### Linux / Mac
+
+```
+source pedicle_env/bin/activate
+```
+
+### Step 3 — Install Required Packages
+
+Run:
+
+```
+pip install numpy
+pip install nibabel
+pip install scipy
+pip install scikit-learn
+pip install scikit-image
+pip install plotly
+pip install totalsegmentator
+```
+
+Or install everything at once:
+
+```
+pip install numpy nibabel scipy scikit-learn scikit-image plotly totalsegmentator
+```
+
+### Step 4 — Activate TotalSegmentator License
+
+Before running segmentation:
+
+```
+export TOTALSEG_LICENSE=""
+```
+
+Windows:
+
+```
+set TOTALSEG_LICENSE=
+```
+
+### Step 5 — Prepare Dataset
+
+Place CT scan:
+
+```
+SpineData/
+ └── case_002/
+      └── case_0000.nii
+```
+
+### Step 6 — Run the Program
+
+Run:
+
+```
+python main.py
+```
+
+The program will:
+
+1. Segment vertebrae
+2. Plan screws
+3. Generate visualization
+
+## Input Requirements
+
+### CT Scan Format
+
+* NIfTI (.nii or .nii.gz)
+
+### Required Region
+
+Lumbar spine:
+
+* L1
+* L2
+* L3
+* L4
+* L5
 
 ## Output
 
-For each vertebra and side:
+### Console Output
 
-* Entry point (3D coordinates)
-* Screw axis direction vector
-* Screw length
-* Screw diameter
-* Clearance metrics
-* Optional JSON / VTK export for visualization
+Example:
 
-## Key Design Principles
+```
+L4
+Left Screw Found
+Diameter: 6.5 mm
+Length: 33 mm
+Safety Margin: 1.2 mm
+```
 
-* Geometry-driven (no neural network dependency)
-* Deterministic and reproducible
-* Anatomically aligned via PCA
-* Physically validated via Euclidean distance transform
-* Efficient (single EDT computation per vertebra)
+### Visualization Output
 
-## Current Limitations
+Interactive 3D model showing:
 
-* PCA axes may not perfectly align with pedicle axis in upper lumbar levels.
-* Severe deformity or segmentation artifacts can affect candidate generation.
-* Narrow pedicles may result in no_safe_path failures.
+* Vertebrae
+* Screws
+* Entry points
 
-Future improvements may include:
+## Project Structure Example
 
-* Atlas-based trajectory priors
-* Multi-candidate aggregation
-* AI-based axis refinement
+```
+project/
+│
+├── main.py
+├── README.md
+│
+└── SpineData/
+    └── case_002/
+         └── case_0000.nii
+```
 
+## Important Notes
 
+* Not intended for clinical use yet
+* Results depend on segmentation quality
+* CT scans must include lumbar vertebrae
