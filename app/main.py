@@ -1,7 +1,8 @@
 import os
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometry import run_planner
+# from geometry import run_planner
+from modifiedGeometry import run_planner
 from visualizer import visualize_surgical_plan
 def main():
     # Get current folder
