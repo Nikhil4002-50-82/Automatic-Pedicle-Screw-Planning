@@ -7,7 +7,7 @@ def main():
     # Get current folder
     baseDir=os.path.dirname(os.path.abspath(__file__))
     # Path to CT scan
-    inputCT=os.path.join(baseDir,"data","case_0007.nii")
+    inputCT=os.path.join(baseDir,"data","case_0000.nii")
     print("PEDICLE SCREW PLANNING PIPELINE STARTED")
     # Step 1: Run segmentation
     segData=run_totalseg(inputCT)
