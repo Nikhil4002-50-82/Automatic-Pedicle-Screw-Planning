@@ -43,16 +43,31 @@ def createCylinder(entry, tip, diameter, resolution=40):
     return X, Y, Z
 
 
-def visualize_surgical_plan(vertsWorld, faces, resultsList):
+import os
+import datetime
+
+def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
     """
     Creates interactive 3D visualization of vertebra mesh and screws.
+    If volume_path is provided, includes the filename in the title and shows file creation timestamp on hover.
     """
-
     print("Creating Surgical-Grade Visualization...")
-
     fig = go.Figure()
 
-    # Vertebra surface
+    # Prepare volume name and timestamp for display
+    if volume_path is not None:
+        volume_name = os.path.basename(volume_path)
+        try:
+            ctime = os.path.getctime(volume_path)
+            dt = datetime.datetime.fromtimestamp(ctime)
+            timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            timestamp_str = "Unknown"
+    else:
+        volume_name = "Unknown Volume"
+        timestamp_str = "Unknown"
+
+    # Vertebra surface with hover info
     fig.add_trace(go.Mesh3d(
         x=vertsWorld[:,0],
         y=vertsWorld[:,1],
@@ -62,7 +77,8 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList):
         k=faces[:,2],
         opacity=0.25,
         color='lightgray',
-        name="Lumbar Vertebrae"
+        name=volume_name,
+        hovertemplate=f"<b>{volume_name}</b><br>Created: {timestamp_str}<extra></extra>"
     ))
 
     # Screws
@@ -100,7 +116,7 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList):
         ))
 
     fig.update_layout(
-        title="Pedicle Screw Planner Visualization",
+        title=f"Pedicle Screw Planner Visualization — {volume_name}",
         scene=dict(aspectmode='data'),
         height=900
     )

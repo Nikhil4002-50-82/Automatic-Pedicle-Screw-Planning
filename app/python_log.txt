@@ -1,0 +1,19 @@
+Testing planner directly on: X:\HTIC\MONAI-3d-AutoSeg\SlicerMONAIAuto3DSeg-main\CADS_WholeBodyCTSEG_UI\output_masks\case_0007_segmented_vertebrae_L5.nii
+ANALYTICAL PEDICLE SCREW PLANNER (L5 OPTIMIZED)
+Analyzing L5 analytically...
+    [Trace] Direction computed: [-0.93882131  0.34353019  0.02452671]
+    [Trace] Entry computed: [  9.49972102  83.49054772 -82.87881222]
+    [Debug] No standard safe diameter. Using max safe radius for visualization. max_safe_radius=1.286647004251956
+    [Debug] Cylinder breached at t=7.0
+    [Debug] Length too short (6.5 < 18)
+    [Trace] Left: NO SAFE PATH USING ANALYTICAL METHOD
+    [Trace] Direction computed: [-0.86505385 -0.49754127  0.06430029]
+    [Trace] Entry computed: [ 14.29793094 149.74851608 -83.62887249]
+    [Debug] No standard safe diameter. Using max safe radius for visualization. max_safe_radius=0.9775867775748767
+    [Debug] Cylinder breached at t=48.0
+Right Screw Computed
+  Diameter: 1.9551735551497533 mm
+  Length: 47.5 mm
+  Safety Margin: 0.0 mm
+
+Results: [{'vertebra': 'L5', 'side': 'Right', 'entry': array([ 14.29793094, 149.74851608, -83.62887249]), 'tip': array([-26.79212681, 126.1153058 , -80.57460881]), 'diameter': np.float64(1.9551735551497533)}]
