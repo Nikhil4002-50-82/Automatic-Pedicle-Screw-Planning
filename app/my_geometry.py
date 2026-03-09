@@ -27,13 +27,18 @@ wTilt = 0.5
 
 labelMap = {5:"L1",4:"L2",3:"L3",2:"L4",1:"L5"}
 
+# ------------------------------------------------------------
+
 def loadNifti(path):
     nii = nib.load(path)
     return nii.get_fdata(), nii.header.get_zooms(), nii.affine
 
+# ------------------------------------------------------------
 
 def getValidLabels(seg):
+
     valid = []
+
     uniqueLabels = np.unique(seg)
     uniqueLabels = uniqueLabels[uniqueLabels != 0]
 
@@ -58,6 +63,7 @@ def getValidLabels(seg):
 
     return valid
 
+# ------------------------------------------------------------
 
 def computeStableFrame(mask,affine):
 
@@ -68,7 +74,6 @@ def computeStableFrame(mask,affine):
     centroid = coordsWorld.mean(axis=0)
 
     pca = PCA(n_components=3)
-
     pca.fit(coordsWorld-centroid)
 
     axes = pca.components_
@@ -90,11 +95,13 @@ def computeStableFrame(mask,affine):
 
     return centroid,np.vstack([siAxis,lrAxis,apAxis])
 
+# ------------------------------------------------------------
 
 def computeDistance(mask,spacing):
 
     return distance_transform_edt(mask,sampling=spacing)
 
+# ------------------------------------------------------------
 
 def pedicleCenters(mask,dist,centroid,axes,affine):
 
@@ -111,7 +118,6 @@ def pedicleCenters(mask,dist,centroid,axes,affine):
     apVals = rel@apAxis
 
     midMask = np.abs(siVals)<np.percentile(np.abs(siVals),35)
-
     posteriorMask = apVals<np.percentile(apVals,40)
 
     leftMask = lrVals<0
@@ -124,7 +130,6 @@ def pedicleCenters(mask,dist,centroid,axes,affine):
         return None,None
 
     lVox = leftCoords[np.argmax(dist[leftCoords[:,0],leftCoords[:,1],leftCoords[:,2]])]
-
     rVox = rightCoords[np.argmax(dist[rightCoords[:,0],rightCoords[:,1],rightCoords[:,2]])]
 
     lMM = nib.affines.apply_affine(affine,lVox)
@@ -132,14 +137,13 @@ def pedicleCenters(mask,dist,centroid,axes,affine):
 
     return lMM,rMM
 
+# ------------------------------------------------------------
 
-def findEntry(center,axes,maskFloat,affine):
+def findEntry(center,axes,maskFloat,affine,invAff):
 
     siAxis,lrAxis,apAxis = axes
 
     direction = -apAxis
-
-    invAff = np.linalg.inv(affine)
 
     p = center.copy()
 
@@ -152,55 +156,69 @@ def findEntry(center,axes,maskFloat,affine):
 
         val = map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
 
-        if val<0.5:
+        if val < 0.5:
             break
 
         p += direction*stepMM
 
-    return p+apAxis*1.0
+    return p + apAxis*1.0
 
+# ------------------------------------------------------------
 
-def cylinderSafe(p,d,radius,maskFloat,affine):
+def orthogonalBasis(d):
 
-    invAff = np.linalg.inv(affine)
+    if abs(d[2]) < 0.9:
+        tmp = np.array([0,0,1])
+    else:
+        tmp = np.array([1,0,0])
 
-    for angle in np.linspace(0,2*np.pi,8,endpoint=False):
+    u = np.cross(d,tmp)
+    u /= np.linalg.norm(u)
 
-        offset = radius*(np.cos(angle)*np.cross(d,[0,0,1])+
-                         np.sin(angle)*np.cross(d,[1,0,0]))
+    v = np.cross(d,u)
 
-        testPoint = p+offset
+    return u,v
+
+# ------------------------------------------------------------
+
+def cylinderSafe(p,d,radius,maskFloat,affine,invAff):
+
+    u,v = orthogonalBasis(d)
+
+    for angle in np.linspace(0,2*np.pi,12,endpoint=False):
+
+        offset = radius*(np.cos(angle)*u + np.sin(angle)*v)
+
+        testPoint = p + offset
 
         vox = nib.affines.apply_affine(invAff,testPoint)
 
-        if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
+        if any(vx<0 or vx>=s-1 for vx,s in zip(vox,maskFloat.shape)):
             return False
 
         val = map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
 
-        if val<0.5:
+        if val < 0.5:
             return False
 
     return True
 
+# ------------------------------------------------------------
 
-def evaluate(entry,direction,maskFloat,dist,affine,radius,axes):
+def evaluate(entry,direction,maskFloat,dist,affine,invAff,radius,axes):
 
     d = direction/np.linalg.norm(direction)
 
-    invAff = np.linalg.inv(affine)
-
     t = 0
-
     minDT = 999
 
     while True:
 
-        if t<5:
+        if t < 5:
             t += stepMM
             continue
 
-        p = entry+d*t
+        p = entry + d*t
 
         vox = nib.affines.apply_affine(invAff,p)
 
@@ -209,22 +227,22 @@ def evaluate(entry,direction,maskFloat,dist,affine,radius,axes):
 
         maskVal = map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
 
-        if maskVal<0.5:
+        if maskVal < 0.5:
             break
 
         dtVal = map_coordinates(dist,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
 
+        if dtVal <= radius:
+            break
+
         minDT = min(minDT,dtVal)
 
-        if not cylinderSafe(p,d,radius,maskFloat,affine):
+        if not cylinderSafe(p,d,radius,maskFloat,affine,invAff):
             break
 
         t += stepMM
 
-    if t<minLengthMM:
-        return None
-
-    if minDT-radius<=0:
+    if t < minLengthMM:
         return None
 
     siAxis = axes[0]
@@ -233,57 +251,54 @@ def evaluate(entry,direction,maskFloat,dist,affine,radius,axes):
 
     score = wDT*minDT + wLen*(t/10) - wTilt*tilt
 
-    return score,t,minDT,p
+    tip = entry + d*t
 
+    return score,t,minDT,tip
 
-def optimize(center,axes,maskFloat,dist,affine,diameters):
+# ------------------------------------------------------------
+
+def optimize(center,axes,maskFloat,dist,affine,invAff,diameters):
 
     if center is None:
         return None
 
     siAxis,lrAxis,apAxis = axes
 
-    entry = findEntry(center,axes,maskFloat,affine)
+    baseEntry = findEntry(center,axes,maskFloat,affine,invAff)
 
     best = None
 
-    for diam in diameters:
+    entryOffsets = [-2,-1,0,1,2]
 
-        radius = diam/2
+    for offset in entryOffsets:
 
-        for lrAng in np.linspace(-directionConeDegLR,directionConeDegLR,directionSamplesLR):
+        entry = baseEntry + apAxis*offset
 
-            for siAng in np.linspace(-directionConeDegSI,directionConeDegSI,directionSamplesSI):
+        for diam in diameters:
 
-                direction = (apAxis +
-                             np.tan(np.deg2rad(lrAng))*lrAxis +
-                             np.tan(np.deg2rad(siAng))*siAxis)
+            radius = diam/2
 
-                r = evaluate(entry,direction,maskFloat,dist,affine,radius,axes)
+            for lrAng in np.linspace(-directionConeDegLR,directionConeDegLR,directionSamplesLR):
 
-                if r is None:
-                    continue
+                for siAng in np.linspace(-directionConeDegSI,directionConeDegSI,directionSamplesSI):
 
-                score,length,minDT,tip = r
+                    direction = (apAxis +
+                                 np.tan(np.deg2rad(lrAng))*lrAxis +
+                                 np.tan(np.deg2rad(siAng))*siAxis)
 
-                if best is None or score>best[0]:
+                    r = evaluate(entry,direction,maskFloat,dist,affine,invAff,radius,axes)
 
-                    best = (score,entry,tip,length,minDT,diam)
+                    if r is None:
+                        continue
+
+                    score,length,minDT,tip = r
+
+                    if best is None or score > best[0]:
+                        best = (score,entry,tip,length,minDT,diam)
 
     return best
 
-
-# -------------------------
-# L5 SEPARATE ALGORITHM
-# -------------------------
-
-def optimize_L5(center,axes,maskFloat,dist,affine,diameters):
-
-    # Currently same as optimize
-    # You can modify this later for L5 anatomy
-
-    return optimize(center,axes,maskFloat,dist,affine,diameters)
-
+# ------------------------------------------------------------
 
 def run_planner(segPath):
 
@@ -292,6 +307,8 @@ def run_planner(segPath):
     print("GEOMETRY BASED PEDICLE SCREW PLANNER")
 
     seg,spacing,affine = loadNifti(segPath)
+
+    invAff = np.linalg.inv(affine)
 
     validSegments = getValidLabels(seg)
 
@@ -304,7 +321,6 @@ def run_planner(segPath):
         diameters = [d for d in globalDiameters if d<=maxDiam]
 
         print(name)
-
         print("Tested Diameters:",diameters)
 
         centroid,axes = computeStableFrame(mask,affine)
@@ -318,24 +334,13 @@ def run_planner(segPath):
         for side,center in [("Left",lCenter),("Right",rCenter)]:
 
             if center is None:
-
                 print(side+": NO SAFE PATH")
-
                 continue
 
-            # ----------- L5 condition -----------
-
-            if name == "L5":
-                result = optimize_L5(center,axes,maskFloat,dist,affine,diameters)
-            else:
-                result = optimize(center,axes,maskFloat,dist,affine,diameters)
-
-            # -----------------------------------
+            result = optimize(center,axes,maskFloat,dist,affine,invAff,diameters)
 
             if result is None:
-
                 print(side+": NO SAFE PATH")
-
                 continue
 
             score,entry,tip,length,minDT,diam = result
@@ -349,13 +354,9 @@ def run_planner(segPath):
             })
 
             print(side,"Screw Found")
-
             print("Diameter:",diam,"mm")
-
             print("Length:",round(length,1),"mm")
-
             print("Safety Margin:",round(minDT-diam/2,2),"mm")
-
             print()
 
     return resultsList
