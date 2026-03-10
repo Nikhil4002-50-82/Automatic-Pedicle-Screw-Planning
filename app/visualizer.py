@@ -83,16 +83,14 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
 
     # Screws
     for r in resultsList:
-
+        diameter = r.get("diameter", 3.0)  # Default to 3.0 mm for thin cylinders
         X, Y, Z = createCylinder(
             r["entry"],
             r["tip"],
-            r["diameter"]
+            diameter
         )
-
         if X is None:
             continue
-
         fig.add_trace(go.Surface(
             x=X,
             y=Y,

@@ -349,65 +349,41 @@ def debug_l5_geometry(side, centroid, axes, center, entry, tip, prefix="Accepted
 def run_planner(segPath):
     # Main function that plans screws for all vertebrae
     resultsList = []
-    print("GEOMETRY BASED PEDICLE SCREW PLANNER (L5 OPTIMIZED)")
-    seg,spacing,affine = loadNifti(segPath)
+    print("ROBUST L5 ENTRY AND TRAJECTORY PLANNER")
+    seg, spacing, affine = loadNifti(segPath)
     validSegments = getValidLabels(seg)
-    for labelVal,mask in validSegments:
-        name = labelMap.get(labelVal,str(labelVal))
-        maxDiam = maxDiameterPerLevel.get(name,max(globalDiameters))
-        diameters = [d for d in globalDiameters if d<=maxDiam]
-        print(name)
-        print("Tested Diameters:",diameters)
-        dist = computeDistance(mask,spacing)
-        if name == "L5":
-            centroid,axes = computeStableFrameL5(mask,affine,dist)
-        else:
-            centroid,axes = computeStableFrame(mask,affine)
+    for labelVal, mask in validSegments:
+        name = labelMap.get(labelVal, str(labelVal))
+        if name != "L5":
+            continue
+        dist = computeDistance(mask, spacing)
+        centroid, axes = computeStableFrameL5(mask, affine, dist)
         maskFloat = mask.astype(np.float32)
-        if name == "L5":
-            lCenter,rCenter = pedicleCentersL5(mask,dist,centroid,axes,affine)
-            print("L5 Frame Debug:")
-            print("  Centroid:", np.round(centroid,2))
-            print("  SI Axis :", np.round(axes[0],4))
-            print("  LR Axis :", np.round(axes[1],4))
-            print("  AP Axis :", np.round(axes[2],4))
-            print("  Left Center :", None if lCenter is None else np.round(lCenter,2))
-            print("  Right Center:", None if rCenter is None else np.round(rCenter,2))
-            print()
-        else:
-            lCenter,rCenter = pedicleCenters(mask,dist,centroid,axes,affine)
-        for side,center in [("Left",lCenter),("Right",rCenter)]:
+        lCenter, rCenter = pedicleCentersL5(mask, dist, centroid, axes, affine)
+        print("L5 Frame Debug:")
+        print("  Centroid:", np.round(centroid, 2))
+        print("  SI Axis :", np.round(axes[0], 4))
+        print("  LR Axis :", np.round(axes[1], 4))
+        print("  AP Axis :", np.round(axes[2], 4))
+        print("  Left Center :", None if lCenter is None else np.round(lCenter, 2))
+        print("  Right Center:", None if rCenter is None else np.round(rCenter, 2))
+        print()
+        for side, center in [("Left", lCenter), ("Right", rCenter)]:
             if center is None:
-                print(side+": NO SAFE PATH")
+                print(side + ": NO ENTRY POINT FOUND")
                 continue
-            if name == "L5":
-                result,rejected = optimizeL5(center,centroid,axes,maskFloat,dist,affine,diameters)
-                if rejected is not None:
-                    rejectedResult,rejectReason = rejected
-                    _,rejEntry,rejTip,rejLength,rejMinDT,rejDiam = rejectedResult
-                    debug_l5_geometry(side,centroid,axes,center,rejEntry,rejTip,prefix="Rejected")
-                    print(f"  Reject Reason: {rejectReason}")
-                    print(f"  Candidate Diameter: {rejDiam} mm, Length: {round(rejLength,1)} mm, Safety Margin: {round(rejMinDT-rejDiam/2,2)} mm")
-                    print()
-            else:
-                result = optimize(center,axes,maskFloat,dist,affine,diameters)
-                rejected = None
-            if result is None:
-                print(side+": NO SAFE PATH")
-                continue
-            score,entry,tip,length,minDT,diam = result
-            if name == "L5":
-                debug_l5_geometry(side,centroid,axes,center,entry,tip)
+            # Entry point: move from center toward posterior
+            siAxis, lrAxis, apAxis = axes
+            entry = findEntry(center, axes, maskFloat, affine)
+            # Tip: move from entry along apAxis (trajectory)
+            tip = entry + apAxis * 40.0  # 40mm forward, adjust as needed
             resultsList.append({
-                "vertebra":name,
-                "side":side,
-                "entry":entry,
-                "tip":tip,
-                "diameter":diam
+                "vertebra": name,
+                "side": side,
+                "entry": entry,
+                "tip": tip
             })
-            print(side,"Screw Found")
-            print("Diameter:",diam,"mm")
-            print("Length:",round(length,1),"mm")
-            print("Safety Margin:",round(minDT-diam/2,2),"mm")
+            print(f"{side} Entry: {np.round(entry,2)}")
+            print(f"{side} Trajectory Tip: {np.round(tip,2)}")
             print()
     return resultsList

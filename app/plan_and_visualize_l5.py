@@ -245,24 +245,21 @@ def plan_and_visualize_l5():
     name = labelMap.get(labelVal, str(labelVal))
     print(f"[Runner] Found segment: label={labelVal} → {name}")
 
-    # --- Compute stable anatomical frame ---
-    centroid, axes = computeStableFrame(mask, affine)
+    # --- Compute robust L5 anatomical frame ---
+    from geometry_2 import computeStableFrameL5
+    dist = computeDistance(mask, spacing)
+    centroid, axes = computeStableFrameL5(mask, affine, dist)
     siAxis, lrAxis, apAxis = axes
-    print(f"[Runner] Centroid = {np.round(centroid, 2)}")
+    print(f"[Runner] Centroid (L5 robust) = {np.round(centroid, 2)}")
     print(f"[Runner] SI axis  = {np.round(siAxis, 4)}")
     print(f"[Runner] LR axis  = {np.round(lrAxis, 4)}")
     print(f"[Runner] AP axis  = {np.round(apAxis, 4)}")
-
-    # --- Distance transform ---
-    dist = computeDistance(mask, spacing)
     maskFloat = mask.astype(np.float32)
 
     # --- Find the true robust Anterior Target (Vertebral Body Center) ---
-    max_idx = np.unravel_index(np.argmax(dist), dist.shape)
-    import nibabel as nib
-
-    anterior_center = nib.affines.apply_affine(affine, max_idx)
-    print(f"[Runner] Anterior body center (from DT) = {np.round(anterior_center, 2)}")
+    from analytical_geometry import getL5VertebralBodyCenter
+    anterior_center = getL5VertebralBodyCenter(mask, axes, centroid, affine)
+    print(f"[Runner] Anterior body center (L5 robust) = {np.round(anterior_center, 2)}")
 
     # --- Find anatomically correct pedicle centers ---
     print("[Runner] Locating pedicle centers (L5-specific filters)...")
@@ -290,62 +287,70 @@ def plan_and_visualize_l5():
     TARGET_TPA_DEG = 25.0
     TARGET_SPA_DEG = 0.0
 
-    for side, center, pw, ph in [
-        ("left", lCenter, lWidth, lHeight),
-        ("right", rCenter, rWidth, rHeight),
+    for side, center in [
+        ("left", lCenter),
+        ("right", rCenter),
     ]:
-        # 1. Compute world trajectory so we can raycast the proper entry point and measure depth
-        traj_world = compute_world_trajectory(
-            center, anterior_center, axes, TARGET_TPA_DEG, TARGET_SPA_DEG, side
-        )
-
-        # 2. Raycast proper posterior entry point by firing from outside inward
-        print(
-            f"[Runner] Raycasting from outside to find posterior surface for {side} entry point..."
-        )
-        entry = robust_raycast_entry_point(center, traj_world, maskFloat, affine)
-        print(
-            f"[Runner] {side.capitalize()} POSTERIOR hitting point = {np.round(entry, 2)}"
-        )
-
-        # 3. Measure usable bone length from entry to anterior cortex
-        print(f"[Runner] Measuring full bone path length for {side} pedicle...")
-        body_depth = measure_bone_path_length(entry, traj_world, mask, affine)
-
-        # 4. Call the planner
-        result = plan_l5_pedicle_screw(
-            entry_point=entry,
-            pedicle_width=pw,
-            pedicle_height=ph,
-            vertebral_body_depth=body_depth,
-            transverse_pedicle_angle=TARGET_TPA_DEG,
-            sagittal_pedicle_angle=TARGET_SPA_DEG,
-            safety_margin=2.0,
-            side=side,
-            anatomical_axes=axes,
-            pedicle_center=center,
-            anterior_target=anterior_center,
-        )
-
-        viz_entry = {
+        # Trajectory: from entry to robust anterior center
+        traj_vec = anterior_center - center
+        traj_vec = traj_vec / np.linalg.norm(traj_vec)
+        print(f"[Runner] {side.capitalize()} Trajectory (entry→anterior): {np.round(traj_vec, 4)}")
+        print(f"[Runner] Raycasting from outside to find posterior surface for {side} entry point...")
+        entry = robust_raycast_entry_point(center, traj_vec, maskFloat, affine)
+        print(f"[Runner] {side.capitalize()} POSTERIOR hitting point = {np.round(entry, 2)}")
+        bone_length = measure_bone_path_length(entry, traj_vec, mask, affine)
+        # Clamp to a safe maximum (e.g., 45mm) but never exceed measured bone length
+        max_safe_length = 45.0
+        screw_length = min(bone_length, max_safe_length)
+        tip = entry + traj_vec * screw_length
+        # Visualize the actual exit point for debugging
+        exit_point = entry + traj_vec * bone_length
+        resultsList.append({
             "vertebra": "L5",
-            "side": result["side"].capitalize(),
-            "entry": result["entry_point"],
-            "tip": result["tip_point"],
-            "diameter": result["recommended_screw_diameter"],
-        }
-        resultsList.append(viz_entry)
+            "side": side.capitalize(),
+            "entry": entry,
+            "tip": tip
+        })
+        print(f"[Runner] {side.capitalize()} Entry: {np.round(entry, 2)}")
+        print(f"[Runner] {side.capitalize()} Trajectory Tip: {np.round(tip, 2)} (clamped)")
+        print(f"[Runner] {side.capitalize()} Trajectory Vector: {np.round(traj_vec, 4)}")
+        print(f"[Runner] {side.capitalize()} Bone Length: {bone_length:.2f} mm (actual), {screw_length:.2f} mm (used)")
+        print(f"[Runner] {side.capitalize()} Exit Point: {np.round(exit_point, 2)}")
 
-        print(
-            f"[Runner] Screw {viz_entry['side']}: "
-            f"diam={viz_entry['diameter']} mm, "
-            f"entry={np.round(viz_entry['entry'], 2)}, "
-            f"tip={np.round(viz_entry['tip'], 2)}"
-        )
+        # Add exit point marker for visualization
+        if 'exit_markers' not in locals():
+            exit_markers = []
+        import plotly.graph_objects as go
+        exit_markers.append(go.Scatter3d(
+            x=[exit_point[0]],
+            y=[exit_point[1]],
+            z=[exit_point[2]],
+            mode='markers',
+            marker=dict(size=6, color='orange'),
+            name=f'{side.capitalize()} Exit Point'
+        ))
+
+    # --- Visualize anterior center as a marker for debug ---
+    import plotly.graph_objects as go
+    anterior_marker = go.Scatter3d(
+        x=[anterior_center[0]],
+        y=[anterior_center[1]],
+        z=[anterior_center[2]],
+        mode='markers',
+        marker=dict(size=7, color='red'),
+        name='Anterior Center (L5)'
+    )
 
     # --- Visualize ---
-    visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=segmented_file)
-    print("[Runner] L5 trajectory planning and visualization completed.")
+    fig = visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=segmented_file)
+    # Add anterior marker and exit markers to the figure if possible
+    try:
+        fig.add_trace(anterior_marker)
+        for marker in exit_markers:
+            fig.add_trace(marker)
+    except Exception:
+        pass
+    print("[Runner] L5 entry and trajectory planning and visualization completed.")
 
 
 if __name__ == "__main__":
