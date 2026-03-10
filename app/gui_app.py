@@ -13,8 +13,8 @@ from PyQt5.QtGui import QFont, QPixmap
 
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometry import run_planner
-from visualizer import visualize_surgical_plan
+from geometryV2 import run_planner
+from visualizerV2 import visualize_surgical_plan
 
 
 # ---------- REAL TIME TERMINAL STREAM ----------

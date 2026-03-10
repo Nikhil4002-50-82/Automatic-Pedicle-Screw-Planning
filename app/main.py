@@ -1,13 +1,13 @@
 import os
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometry import run_planner
-from visualizer import visualize_surgical_plan
+from geometryV1 import run_planner
+from visualizerV1 import visualize_surgical_plan
 def main():
     # Get current folder
     baseDir=os.path.dirname(os.path.abspath(__file__))
     # Path to CT scan
-    inputCT=os.path.join(baseDir,"data","case_0000.nii")
+    inputCT=os.path.join(baseDir,"data","case_0020.nii")
     print("PEDICLE SCREW PLANNING PIPELINE STARTED")
     # Step 1: Run segmentation
     segData=run_totalseg(inputCT)
