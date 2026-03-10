@@ -1,6 +1,16 @@
 import plotly.graph_objects as go
 import numpy as np
 
+# PyQt6 imports for custom window visualization
+import sys
+import tempfile
+from PyQt6.QtWidgets import QApplication, QMainWindow
+from PyQt6.QtCore import QUrl
+try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+except ImportError:
+    QWebEngineView = None  # fallback if not available
+
 def createCylinder(entry, tip, diameter, resolution=40):
     """
     Builds a cylindrical screw surface between entry and tip.
@@ -83,7 +93,8 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
 
     # Screws
     for r in resultsList:
-        diameter = r.get("diameter", 3.0)  # Default to 3.0 mm for thin cylinders
+        # Use the thinnest possible diameter for screws (e.g., 0.2 mm)
+        diameter = r.get("diameter", 0.2)
         X, Y, Z = createCylinder(
             r["entry"],
             r["tip"],
@@ -96,7 +107,11 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
             y=Y,
             z=Z,
             showscale=False,
-            opacity=1
+            opacity=1,
+            surfacecolor=np.ones_like(X),
+            colorscale=[[0, 'red'], [1, 'red']],
+            cmin=0,
+            cmax=1
         ))
 
     # Entry markers
@@ -119,5 +134,24 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
         height=900
     )
 
-    # Always open in browser (stable local behavior)
-    fig.show(renderer="browser")
+    # Show Plotly figure in a PyQt6 window using QWebEngineView
+    if QWebEngineView is not None:
+        # Save the figure to a temporary HTML file
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
+            fig.write_html(tmpfile.name)
+            html_path = tmpfile.name
+
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+        window = QMainWindow()
+        window.setWindowTitle("Pedicle Screw Planner Visualization")
+        view = QWebEngineView()
+        view.load(QUrl.fromLocalFile(html_path))
+        window.setCentralWidget(view)
+        window.resize(1200, 900)
+        window.show()
+        app.exec()
+    else:
+        # Fallback: open in browser if QWebEngineView is not available
+        fig.show(renderer="browser")

@@ -283,39 +283,98 @@ def plan_and_visualize_l5():
     # --- Plan screws using the deterministic trajectory planner ---
     resultsList = []
 
-    # Anatomical L5 TPA is typically 20-25 degrees.
-    TARGET_TPA_DEG = 25.0
-    TARGET_SPA_DEG = 0.0
+    # Calculate lateral distances to determine true pedicle vs. transverse process
+    left_dist = np.abs(np.dot(lCenter - centroid, lrAxis))
+    right_dist = np.abs(np.dot(rCenter - centroid, lrAxis))
+    
+    print(f"[Runner] Mediolateral distance from centroid: Left={left_dist:.1f}mm, Right={right_dist:.1f}mm")
 
-    for side, center in [
-        ("left", lCenter),
-        ("right", rCenter),
+    # The point closer to the midline is the true pedicle
+    if left_dist < right_dist:
+        print("[Runner] Left point is closer to midline. Symmetrizing Right to match Left's lateral offset...")
+        # Mirror the left lateral offset to the right side
+        final_lCenter = lCenter
+        
+        # Project lCenter's LR offset to the right side
+        lateral_offset = np.dot(lCenter - centroid, lrAxis)
+        # Assuming lrAxis points Right (positive), so left is negative
+        # Mirror: if left is at -X, right should be at +X (-offset)
+        final_rCenter = lCenter - 2 * lateral_offset * lrAxis
+    else:
+        print("[Runner] Right point is closer to midline. Symmetrizing Left to match Right's lateral offset...")
+        final_rCenter = rCenter
+        
+        lateral_offset = np.dot(rCenter - centroid, lrAxis)
+        final_lCenter = rCenter - 2 * lateral_offset * lrAxis
+
+    print(f"[Runner] Final Left center  = {np.round(final_lCenter, 2)}")
+    print(f"[Runner] Final Right center = {np.round(final_rCenter, 2)}")
+
+    # Import the PCA function from our expt script
+    from l5_expt_2 import compute_local_pedicle_pca
+    
+    for side, true_center in [
+        ("left", final_lCenter),
+        ("right", final_rCenter),
     ]:
-        # Trajectory: from entry to robust anterior center
-        traj_vec = anterior_center - center
-        traj_vec = traj_vec / np.linalg.norm(traj_vec)
-        print(f"[Runner] {side.capitalize()} Trajectory (entry→anterior): {np.round(traj_vec, 4)}")
-        print(f"[Runner] Raycasting from outside to find posterior surface for {side} entry point...")
-        entry = robust_raycast_entry_point(center, traj_vec, maskFloat, affine)
-        print(f"[Runner] {side.capitalize()} POSTERIOR hitting point = {np.round(entry, 2)}")
-        bone_length = measure_bone_path_length(entry, traj_vec, mask, affine)
-        # Clamp to a safe maximum (e.g., 45mm) but never exceed measured bone length
+        print(f"\n--- Constructing {side.capitalize()} Trajectory ---")
+        
+        # 1. Run local PCA starting from the robust center
+        print(f"[Runner] Running Local PCA with 15mm crop for {side} pedicle...")
+        pca_traj = compute_local_pedicle_pca(
+            maskFloat, 
+            affine, 
+            true_center, 
+            radius_mm=15.0, 
+            global_ap_axis=apAxis
+        )
+        
+        # Ensure PCA points Anteriorly (towards vertebral body)
+        if np.dot(pca_traj, apAxis) < 0:
+            pca_traj = -pca_traj
+        
+        # Enforce medial axial convergence
+        # If left side, vector should point right (positive along lrAxis)
+        # If right side, vector should point left (negative along lrAxis)
+        medial_dot = np.dot(pca_traj, lrAxis)
+        if side == "left" and medial_dot < 0:
+            print(f"[Runner] Correcting {side} PCA lateral deviation...")
+            # Reflect the LR component to point medially
+            pca_traj = pca_traj - 2 * medial_dot * lrAxis 
+        elif side == "right" and medial_dot > 0:
+            print(f"[Runner] Correcting {side} PCA lateral deviation...")
+            pca_traj = pca_traj - 2 * medial_dot * lrAxis
+
+        pca_traj = pca_traj / np.linalg.norm(pca_traj)
+        
+        print(f"[Runner] Final {side.capitalize()} PCA Trajectory: {np.round(pca_traj, 4)}")
+        
+        # 2. Inside-Out Raycast to find true posterior surface entry point
+        print(f"[Runner] Raycasting backwards to find posterior surface entry...")
+        # Start at the center, march backwards (-pca_traj) to find entry
+        # then swap back so vector points anteriorly again
+        entry = robust_raycast_entry_point(true_center, pca_traj, maskFloat, affine)
+        
+        # 3. Sink the screw
+        bone_length = measure_bone_path_length(entry, pca_traj, mask, affine)
+        # Clamp to a safe clinical maximum
         max_safe_length = 45.0
         screw_length = min(bone_length, max_safe_length)
-        tip = entry + traj_vec * screw_length
-        # Visualize the actual exit point for debugging
-        exit_point = entry + traj_vec * bone_length
+        
+        tip = entry + pca_traj * screw_length
+        exit_point = entry + pca_traj * bone_length
+        
         resultsList.append({
             "vertebra": "L5",
             "side": side.capitalize(),
             "entry": entry,
             "tip": tip
         })
+        
         print(f"[Runner] {side.capitalize()} Entry: {np.round(entry, 2)}")
-        print(f"[Runner] {side.capitalize()} Trajectory Tip: {np.round(tip, 2)} (clamped)")
-        print(f"[Runner] {side.capitalize()} Trajectory Vector: {np.round(traj_vec, 4)}")
+        print(f"[Runner] {side.capitalize()} Trajectory Tip: {np.round(tip, 2)}")
         print(f"[Runner] {side.capitalize()} Bone Length: {bone_length:.2f} mm (actual), {screw_length:.2f} mm (used)")
-        print(f"[Runner] {side.capitalize()} Exit Point: {np.round(exit_point, 2)}")
+
 
         # Add exit point marker for visualization
         if 'exit_markers' not in locals():
