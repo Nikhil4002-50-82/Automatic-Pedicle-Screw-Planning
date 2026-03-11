@@ -1,0 +1,22 @@
+[Runner] Centroid (L5 robust) = [-51.11 134.89   0.5 ]
+[Runner] Anterior body center (L5 robust) = [-50.08 137.    -1.57]
+[Runner] Locating pedicle centers (L5-specific filters)...
+[Runner] Left  pedicle center = [-60.11 133.39   0.5 ]
+[Runner] Right pedicle center = [-42.11 130.39   2.  ]
+  [Pedicle Dim] Width (LR): +32.7 / ΓêÆ15.9 = 48.6 mm
+  [Pedicle Dim] Height (SI): +13.8 / ΓêÆ12.0 = 25.8 mm
+  [Pedicle Dim] Width (LR): +14.1 / ΓêÆ34.2 = 48.3 mm
+  [Pedicle Dim] Height (SI): +13.8 / ΓêÆ13.2 = 27.0 mm
+[Runner] Mediolateral distance from centroid: Left=8.6mm, Right=9.7mm
+[Runner] Final Left center  = [-60.11 133.39   0.5 ]
+[Runner] Final Right center = [-43.24 130.38   1.51]
+--- Constructing Left Trajectory ---
+  [Local PCA] Computed Trajectory: [0. 1. 0.]
+[Runner] Final Left PCA Trajectory: [0.345  0.9384 0.0207]
+[Runner] Left Trajectory Tip: [-6.7180e+01  1.1416e+02  7.0000e-02]
+[Runner] Left Bone Length: 13.50 mm (actual), 13.50 mm (used)
+--- Constructing Right Trajectory ---
+  [Local PCA] Computed Trajectory: [ 0.1026 -0.0329 -0.9942]
+[Runner] Final Right PCA Trajectory: [ 0.0085 -0.0161 -0.9998]
+[Runner] Right Trajectory Tip: [-43.12 130.16 -12.48]
+[Runner] Right Bone Length: 26.00 mm (actual), 26.00 mm (used)

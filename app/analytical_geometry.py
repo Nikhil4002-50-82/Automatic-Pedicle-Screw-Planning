@@ -96,23 +96,32 @@ def pedicleCentersL5(mask, dist, centroid, axes, affine):
     lrVals = rel @ lrAxis
     apVals = rel @ apAxis
 
-    # L5-specific narrow mid-band search for pedicles
-    midMask = np.abs(siVals) < np.percentile(np.abs(siVals), 35)
-    posteriorMask = (apVals > np.percentile(apVals, 30)) & (
-        apVals < np.percentile(apVals, 60)
-    )
-    leftMask = lrVals < np.percentile(lrVals, 25)
-    rightMask = lrVals > np.percentile(lrVals, 75)
+    # L5 Generalization: Use robust anatomical bounding boxes instead of brittle percentiles.
+    # 1. Height (SI) Filter: The pedicles are centrally located vertically. Avoid articular processes.
+    si_min = np.percentile(siVals, 25)
+    si_max = np.percentile(siVals, 75)
+    midMask = (siVals > si_min) & (siVals < si_max)
+
+    # 2. Anterior-Posterior (AP) Filter: Pedicles sit between the anterior body and posterior lamina.
+    # We must cut off before 60% to avoid the massive vertebral body, which falsely attracts the center.
+    ap_min = np.percentile(apVals, 30)
+    ap_max = np.percentile(apVals, 60)
+    posteriorMask = (apVals > ap_min) & (apVals < ap_max)
+
+    # 3. Lateral (LR) Filter: Simply split by midline, avoiding the immediate spinal canal center.
+    # Using physical distance (mm) from centroid to avoid percentile skews from transverse processes.
+    leftMask = lrVals < -12.0   # At least 12mm left of centroid to avoid lamina root
+    rightMask = lrVals > 12.0   # At least 12mm right of centroid
 
     leftCoords = coords[midMask & posteriorMask & leftMask]
     rightCoords = coords[midMask & posteriorMask & rightMask]
 
-    if len(leftCoords) < 30 or len(rightCoords) < 30:
-        # Fallback to broader search
-        midMask = np.abs(siVals) < np.percentile(np.abs(siVals), 40)
-        posteriorMask = apVals < np.percentile(apVals, 50)
-        leftMask = lrVals < 0
-        rightMask = lrVals > 0
+    if len(leftCoords) < 10 or len(rightCoords) < 10:
+        # Fallback to broader search if the vertebra is severely deformed
+        midMask = (siVals > np.percentile(siVals, 15)) & (siVals < np.percentile(siVals, 85))
+        posteriorMask = (apVals > np.percentile(apVals, 25)) & (apVals < np.percentile(apVals, 65))
+        leftMask = lrVals < -6.0
+        rightMask = lrVals > 6.0
         leftCoords = coords[midMask & posteriorMask & leftMask]
         rightCoords = coords[midMask & posteriorMask & rightMask]
 

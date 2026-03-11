@@ -310,70 +310,90 @@ def plan_and_visualize_l5():
     print(f"[Runner] Final Left center  = {np.round(final_lCenter, 2)}")
     print(f"[Runner] Final Right center = {np.round(final_rCenter, 2)}")
 
-    # Import the PCA function from our expt script
-    from l5_expt_2 import compute_local_pedicle_pca
+    from analytical_geometry import cylinder_safe
     
     for side, true_center in [
         ("left", final_lCenter),
         ("right", final_rCenter),
     ]:
         print(f"\n--- Constructing {side.capitalize()} Trajectory ---")
+        print(f"[Runner] Running Generalized Volumetric Grid Search for {side} pedicle...")
         
-        # 1. Run local PCA starting from the robust center
-        print(f"[Runner] Running Local PCA with 15mm crop for {side} pedicle...")
-        pca_traj = compute_local_pedicle_pca(
-            maskFloat, 
-            affine, 
-            true_center, 
-            radius_mm=15.0, 
-            global_ap_axis=apAxis
-        )
+        # Determine medial direction (+lrAxis or -lrAxis)
+        lateral_offset = np.dot(true_center - centroid, lrAxis)
+        medial_dir = lrAxis if lateral_offset < 0 else -lrAxis
         
-        # Ensure PCA points Anteriorly (towards vertebral body)
-        if np.dot(pca_traj, apAxis) < 0:
-            pca_traj = -pca_traj
+        best_score = -1.0
+        best_traj = None
+        best_entry = None
+        best_bone_length = 0.0
         
-        # Enforce medial axial convergence
-        # If left side, vector should point right (positive along lrAxis)
-        # If right side, vector should point left (negative along lrAxis)
-        medial_dot = np.dot(pca_traj, lrAxis)
-        if side == "left" and medial_dot < 0:
-            print(f"[Runner] Correcting {side} PCA lateral deviation...")
-            # Reflect the LR component to point medially
-            pca_traj = pca_traj - 2 * medial_dot * lrAxis 
-        elif side == "right" and medial_dot > 0:
-            print(f"[Runner] Correcting {side} PCA lateral deviation...")
-            pca_traj = pca_traj - 2 * medial_dot * lrAxis
-
-        pca_traj = pca_traj / np.linalg.norm(pca_traj)
-        
-        print(f"[Runner] Final {side.capitalize()} PCA Trajectory: {np.round(pca_traj, 4)}")
-        
-        # 2. Inside-Out Raycast to find true posterior surface entry point
-        print(f"[Runner] Raycasting backwards to find posterior surface entry...")
-        # Start at the center, march backwards (-pca_traj) to find entry
-        # then swap back so vector points anteriorly again
-        entry = robust_raycast_entry_point(true_center, pca_traj, maskFloat, affine)
+        # Grid sweep of clinical angles: 
+        # Medial convergence: 10 to 40 degrees
+        # Sagittal tilt: -10 to +20 degrees 
+        for lrAng in np.linspace(10, 40, 10):
+            for siAng in np.linspace(-10, 20, 8):
+                lr_rad = np.deg2rad(lrAng)
+                si_rad = np.deg2rad(siAng)
+                
+                # Construct test trajectory pointing anteriorly (apAxis) 
+                # plus defined medial and sagittal components.
+                test_dir = apAxis + np.tan(lr_rad) * medial_dir + np.tan(si_rad) * siAxis
+                test_dir = test_dir / np.linalg.norm(test_dir)
+                
+                # Check posterior entry point along this vector from the pedicle axis center
+                entry = robust_raycast_entry_point(true_center, test_dir, maskFloat, affine)
+                path_len = measure_bone_path_length(entry, test_dir, mask, affine)
+                
+                # Verify safety cylinder (2.25mm radius = 4.5mm screw)
+                safe_len = 0.0
+                step = 2.0
+                
+                # Test the cylinder's safety along the path
+                for t in np.arange(4.0, path_len, step):
+                    p = entry + test_dir * t
+                    
+                    if not cylinder_safe(p, test_dir, 2.25, maskFloat, affine):
+                        break
+                        
+                    # Stop if it crosses the sagittal midline (spinal canal blowout protection)
+                    p_lateral = np.dot(p - centroid, lrAxis)
+                    if (lateral_offset < 0 and p_lateral > 0) or (lateral_offset > 0 and p_lateral < 0):
+                        break
+                    
+                    safe_len = t
+                    
+                # Maximize completely safe bone path
+                if safe_len > best_score:
+                    best_score = safe_len
+                    best_traj = test_dir
+                    best_entry = entry
+                    best_bone_length = path_len
+                    
+        if best_traj is None:
+            print(f"[Runner] ERROR: Could not find any safe valid trajectory for {side} pedicle!")
+            continue
+            
+        print(f"[Runner] Optimal {side.capitalize()} Trajectory: Safe inner core length = {best_score:.1f} mm")
+        print(f"[Runner] Trajectory Vector: {np.round(best_traj, 4)}")
         
         # 3. Sink the screw
-        bone_length = measure_bone_path_length(entry, pca_traj, mask, affine)
-        # Clamp to a safe clinical maximum
-        max_safe_length = 45.0
-        screw_length = min(bone_length, max_safe_length)
+        # Use a safe clinical maximum
+        screw_length = min(best_bone_length, 45.0)
         
-        tip = entry + pca_traj * screw_length
-        exit_point = entry + pca_traj * bone_length
+        tip = best_entry + best_traj * screw_length
+        exit_point = best_entry + best_traj * best_bone_length
         
         resultsList.append({
             "vertebra": "L5",
             "side": side.capitalize(),
-            "entry": entry,
+            "entry": best_entry,
             "tip": tip
         })
         
-        print(f"[Runner] {side.capitalize()} Entry: {np.round(entry, 2)}")
+        print(f"[Runner] {side.capitalize()} Entry: {np.round(best_entry, 2)}")
         print(f"[Runner] {side.capitalize()} Trajectory Tip: {np.round(tip, 2)}")
-        print(f"[Runner] {side.capitalize()} Bone Length: {bone_length:.2f} mm (actual), {screw_length:.2f} mm (used)")
+        print(f"[Runner] {side.capitalize()} Bone Length: {best_bone_length:.2f} mm (actual), {screw_length:.2f} mm (used)")
 
 
         # Add exit point marker for visualization

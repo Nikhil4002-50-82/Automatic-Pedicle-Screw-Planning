@@ -46,13 +46,33 @@ def compute_local_pedicle_pca(mask, affine, center_world, radius_mm=15.0, global
     pca = PCA(n_components=3)
     pca.fit(local_bone_coords)
     
-    # The primary eigenvector defines the longitudinal axis of the isolated pedicle
-    primary_axis = pca.components_[0]
+    c0 = pca.components_[0]
 
-    # 6. Vector Alignment: Ensure it points Anteriorly (toward the vertebral body)
+    # 6. Vector Selection & Alignment
+    # The primary eigenvector defines the longest axis. However, if the bounding 
+    # sphere includes the transverse process or superior articular process, the 
+    # highest variance axis might not be the pedicle axis (AP).
+    # Therefore, we pick the component out of all 3 that best aligns with the AP axis.
     if global_ap_axis is not None:
+        c0, c1, c2 = pca.components_
+        
+        dots = [
+            abs(np.dot(c0, global_ap_axis)),
+            abs(np.dot(c1, global_ap_axis)),
+            abs(np.dot(c2, global_ap_axis))
+        ]
+        
+        best_idx = np.argmax(dots)
+        primary_axis = pca.components_[best_idx]
+        
+        if best_idx != 0:
+            print(f"  [Local PCA] Component 0 was not AP-aligned (AP dot={dots[0]:.2f}). Swapping to Component {best_idx} (AP dot={dots[best_idx]:.2f}).")
+            
+        # Ensure it points Anteriorly (toward the vertebral body)
         if np.dot(primary_axis, global_ap_axis) < 0:
             primary_axis = -primary_axis
+    else:
+        primary_axis = c0
 
     print(f"  [Local PCA] Computed Trajectory: {np.round(primary_axis, 4)}")
     return primary_axis
