@@ -77,8 +77,8 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
         volume_name = "Unknown Volume"
         timestamp_str = "Unknown"
 
-    # Vertebra surface with hover info (show coordinates)
-    fig.add_trace(go.Mesh3d(
+    # Vertebra surface with hover info (show coordinates) and opacity slider
+    mesh_trace = go.Mesh3d(
         x=vertsWorld[:,0],
         y=vertsWorld[:,1],
         z=vertsWorld[:,2],
@@ -92,8 +92,31 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
             f"<b>{volume_name}</b><br>Created: {timestamp_str}" 
             "<br>X: %{x:.2f} Y: %{y:.2f} Z: %{z:.2f}"
             "<extra></extra>"
+        ),
+        showscale=False
+    )
+    fig.add_trace(mesh_trace)
+
+    # Add a user-friendly opacity slider for the mesh
+    opacities = [round(x, 2) for x in np.linspace(0.05, 1.0, 20)]
+    steps = []
+    for op in opacities:
+        step = dict(
+            method="restyle",
+            args=[{"opacity": [op] }, [0]],  # Only update the first trace (mesh)
+            label=f"{op:.2f}"
         )
-    ))
+        steps.append(step)
+    sliders = [dict(
+        active=4,
+        currentvalue={"prefix": "Mesh Opacity: "},
+        pad={"t": 5, "b": 30},  # Add bottom padding
+        steps=steps,
+        x=0.1,
+        y=0.08,  # Move slider a bit higher from the bottom
+        len=0.8
+    )]
+    fig.update_layout(sliders=sliders)
 
     # Screws with depth info on hover
     for r in resultsList:
@@ -184,7 +207,8 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
     fig.update_layout(
         title=f"Pedicle Screw Planner Visualization — {volume_name}",
         scene=dict(aspectmode='data'),
-        height=900
+        height=650,  # Reduced height for less vertical space
+        margin=dict(l=0, r=0, t=60, b=0),
     )
 
     def show_figure(fig_obj=None):
