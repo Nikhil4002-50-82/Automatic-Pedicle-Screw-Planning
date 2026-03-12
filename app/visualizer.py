@@ -77,7 +77,7 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
         volume_name = "Unknown Volume"
         timestamp_str = "Unknown"
 
-    # Vertebra surface with hover info
+    # Vertebra surface with hover info (show coordinates)
     fig.add_trace(go.Mesh3d(
         x=vertsWorld[:,0],
         y=vertsWorld[:,1],
@@ -88,20 +88,35 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
         opacity=0.25,
         color='lightgray',
         name=volume_name,
-        hovertemplate=f"<b>{volume_name}</b><br>Created: {timestamp_str}<extra></extra>"
+        hovertemplate=(
+            f"<b>{volume_name}</b><br>Created: {timestamp_str}" 
+            "<br>X: %{x:.2f} Y: %{y:.2f} Z: %{z:.2f}"
+            "<extra></extra>"
+        )
     ))
 
-    # Screws
+    # Screws with depth info on hover
     for r in resultsList:
-        # Use the thinnest possible diameter for screws (e.g., 0.2 mm)
         diameter = r.get("diameter", 0.2)
-        X, Y, Z = createCylinder(
-            r["entry"],
-            r["tip"],
-            diameter
-        )
+        entry = np.array(r["entry"])
+        tip = np.array(r["tip"])
+        depth = np.linalg.norm(tip - entry)
+        X, Y, Z = createCylinder(entry, tip, diameter)
         if X is None:
             continue
+        # Custom hover text for the screw surface
+        hovertext = (
+            f"<b>{r.get('side', '')} Screw</b>"
+            f"<br>Entry: [{entry[0]:.2f}, {entry[1]:.2f}, {entry[2]:.2f}]"
+            f"<br>Tip: [{tip[0]:.2f}, {tip[1]:.2f}, {tip[2]:.2f}]"
+            f"<br>Depth: {depth:.2f} mm"
+            "<extra></extra>"
+        )
+        side = r.get("side", "").lower()
+        if side == "left":
+            screw_colorscale = [[0, '#000000'], [1, '#000000']]
+        else:
+            screw_colorscale = [[0, 'red'], [1, 'red']]
         fig.add_trace(go.Surface(
             x=X,
             y=Y,
@@ -109,24 +124,62 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
             showscale=False,
             opacity=1,
             surfacecolor=np.ones_like(X),
-            colorscale=[[0, 'red'], [1, 'red']],
+            colorscale=screw_colorscale,
             cmin=0,
-            cmax=1
+            cmax=1,
+            hovertemplate=hovertext
         ))
 
-    # Entry markers
+    # Entry markers and trajectory lines with legend coords and color coding
     for r in resultsList:
-
-        entry = r["entry"]
-
-        fig.add_trace(go.Scatter3d(
-            x=[entry[0]],
-            y=[entry[1]],
-            z=[entry[2]],
-            mode='markers',
-            marker=dict(size=5, color='green'),
-            showlegend=False
-        ))
+        entry = np.array(r["entry"])
+        tip = np.array(r["tip"])
+        side = r.get("side", "")
+        if side.lower() == "left":
+            entry_color = 'blue'
+            # Use explicit RGB hex for black, and set legendgroup to avoid color inheritance
+            fig.add_trace(go.Scatter3d(
+                x=[entry[0]],
+                y=[entry[1]],
+                z=[entry[2]],
+                mode='markers',
+                marker=dict(size=8, color=entry_color, symbol='circle'),
+                name=f"{side} Entry: [{entry[0]:.2f}, {entry[1]:.2f}, {entry[2]:.2f}]",
+                showlegend=True,
+                legendgroup='left_traj',
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=[entry[0], tip[0]],
+                y=[entry[1], tip[1]],
+                z=[entry[2], tip[2]],
+                mode='lines',
+                line=dict(color='#000000', width=6),
+                name=f"{side} Trajectory",
+                showlegend=True,
+                legendgroup='left_traj',
+            ))
+        else:
+            entry_color = 'green'
+            fig.add_trace(go.Scatter3d(
+                x=[entry[0]],
+                y=[entry[1]],
+                z=[entry[2]],
+                mode='markers',
+                marker=dict(size=8, color=entry_color, symbol='circle'),
+                name=f"{side} Entry: [{entry[0]:.2f}, {entry[1]:.2f}, {entry[2]:.2f}]",
+                showlegend=True,
+                legendgroup='right_traj',
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=[entry[0], tip[0]],
+                y=[entry[1], tip[1]],
+                z=[entry[2], tip[2]],
+                mode='lines',
+                line=dict(color='red', width=6),
+                name=f"{side} Trajectory",
+                showlegend=True,
+                legendgroup='right_traj',
+            ))
 
     fig.update_layout(
         title=f"Pedicle Screw Planner Visualization — {volume_name}",
@@ -134,24 +187,23 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
         height=900
     )
 
-    # Show Plotly figure in a PyQt6 window using QWebEngineView
-    if QWebEngineView is not None:
-        # Save the figure to a temporary HTML file
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
-            fig.write_html(tmpfile.name)
-            html_path = tmpfile.name
-
-        app = QApplication.instance()
-        if not app:
-            app = QApplication(sys.argv)
-        window = QMainWindow()
-        window.setWindowTitle("Pedicle Screw Planner Visualization")
-        view = QWebEngineView()
-        view.load(QUrl.fromLocalFile(html_path))
-        window.setCentralWidget(view)
-        window.resize(1200, 900)
-        window.show()
-        app.exec()
-    else:
-        # Fallback: open in browser if QWebEngineView is not available
-        fig.show(renderer="browser")
+    def show_figure(fig_obj=None):
+        # Show Plotly figure in a PyQt6 window using QWebEngineView
+        if QWebEngineView is not None:
+            with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
+                fig.write_html(tmpfile.name)
+                html_path = tmpfile.name
+            app = QApplication.instance()
+            if not app:
+                app = QApplication(sys.argv)
+            window = QMainWindow()
+            window.setWindowTitle("Pedicle Screw Planner Visualization")
+            view = QWebEngineView()
+            view.load(QUrl.fromLocalFile(html_path))
+            window.setCentralWidget(view)
+            window.resize(1200, 900)
+            window.show()
+            app.exec()
+        else:
+            fig.show(renderer="browser")
+    return fig, show_figure

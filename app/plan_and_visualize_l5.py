@@ -511,18 +511,6 @@ def plan_and_visualize_l5():
         print(f"[Runner] {side.capitalize()} Bone Length: {best_bone_length:.2f} mm (actual), {screw_length:.2f} mm (used)")
 
 
-        # Add exit point marker for visualization
-        if 'exit_markers' not in locals():
-            exit_markers = []
-        import plotly.graph_objects as go
-        exit_markers.append(go.Scatter3d(
-            x=[exit_point[0]],
-            y=[exit_point[1]],
-            z=[exit_point[2]],
-            mode='markers',
-            marker=dict(size=6, color='orange'),
-            name=f'{side.capitalize()} Exit Point'
-        ))
 
     # --- Visualize anterior center as a marker for debug ---
     import plotly.graph_objects as go
@@ -536,14 +524,16 @@ def plan_and_visualize_l5():
     )
 
     # --- Visualize ---
-    fig = visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=segmented_file)
-    # Add anterior marker and exit markers to the figure if possible
+    import time
+    elapsed = time.time() - start_time
+    print(f"[Timer] Total runtime (before visualization): {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
+    fig, show_figure = visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=segmented_file)
+    # Add anterior marker to the figure if possible
     try:
         fig.add_trace(anterior_marker)
-        for marker in exit_markers:
-            fig.add_trace(marker)
     except Exception:
         pass
+    show_figure(fig)
     print("[Runner] L5 entry and trajectory planning and visualization completed.")
 
 
