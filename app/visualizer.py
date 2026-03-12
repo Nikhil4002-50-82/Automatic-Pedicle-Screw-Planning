@@ -57,6 +57,41 @@ import os
 import datetime
 
 def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
+
+
+    print("Creating Surgical-Grade Visualization...")
+    fig = go.Figure()
+
+    # Add a wireframe box around the mask area for distinction
+    min_x, min_y, min_z = np.min(vertsWorld, axis=0)
+    max_x, max_y, max_z = np.max(vertsWorld, axis=0)
+    corners = np.array([
+        [min_x, min_y, min_z],
+        [max_x, min_y, min_z],
+        [max_x, max_y, min_z],
+        [min_x, max_y, min_z],
+        [min_x, min_y, max_z],
+        [max_x, min_y, max_z],
+        [max_x, max_y, max_z],
+        [min_x, max_y, max_z],
+    ])
+    edges = [
+        (0,1), (1,2), (2,3), (3,0),  # bottom face
+        (4,5), (5,6), (6,7), (7,4),  # top face
+        (0,4), (1,5), (2,6), (3,7)   # vertical edges
+    ]
+    for i, j in edges:
+        fig.add_trace(go.Scatter3d(
+            x=[corners[i,0], corners[j,0]],
+            y=[corners[i,1], corners[j,1]],
+            z=[corners[i,2], corners[j,2]],
+            mode='lines',
+            line=dict(color='rgba(0,0,0,0.5)', width=3, dash='dot'),
+            showlegend=False,
+            name='Mask Bounding Box',
+            hoverinfo='skip',
+        ))
+
     """
     Creates interactive 3D visualization of vertebra mesh and screws.
     If volume_path is provided, includes the filename in the title and shows file creation timestamp on hover.
@@ -110,10 +145,10 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
     sliders = [dict(
         active=4,
         currentvalue={"prefix": "Mesh Opacity: "},
-        pad={"t": 5, "b": 30},  # Add bottom padding
+        pad={"t": 5, "b": 0},  # Minimal bottom padding
         steps=steps,
         x=0.1,
-        y=0.08,  # Move slider a bit higher from the bottom
+        y=-0.08,  # Move slider to the very bottom
         len=0.8
     )]
     fig.update_layout(sliders=sliders)
@@ -209,11 +244,22 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
         scene=dict(aspectmode='data'),
         height=650,  # Reduced height for less vertical space
         margin=dict(l=0, r=0, t=60, b=0),
+        shapes=[
+            dict(
+                type="rect",
+                xref="paper", yref="paper",
+                x0=0.02, y0=0.18, x1=0.82, y1=0.98,  # Adjust as needed for plot area
+                line=dict(color="black", width=2),
+                fillcolor="rgba(0,0,0,0)",
+                layer="above"
+            )
+        ]
     )
 
     def show_figure(fig_obj=None):
         # Show Plotly figure in a PyQt6 window using QWebEngineView
         if QWebEngineView is not None:
+            from PyQt6.QtWidgets import QPushButton, QFileDialog, QVBoxLayout, QWidget
             with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
                 fig.write_html(tmpfile.name)
                 html_path = tmpfile.name
@@ -222,9 +268,26 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
                 app = QApplication(sys.argv)
             window = QMainWindow()
             window.setWindowTitle("Pedicle Screw Planner Visualization")
+            # Main widget and layout
+            main_widget = QWidget()
+            layout = QVBoxLayout()
+            main_widget.setLayout(layout)
+            # Web view
             view = QWebEngineView()
             view.load(QUrl.fromLocalFile(html_path))
-            window.setCentralWidget(view)
+            layout.addWidget(view)
+            # Export button
+            export_btn = QPushButton("Export Image")
+            layout.addWidget(export_btn)
+            def export_image():
+                # Use QWebEngineView's grab method to get a screenshot
+                img = view.grab()
+                options = QFileDialog.Options()
+                file_path, _ = QFileDialog.getSaveFileName(window, "Save Image", "visualization.png", "PNG Files (*.png);;All Files (*)", options=options)
+                if file_path:
+                    img.save(file_path)
+            export_btn.clicked.connect(export_image)
+            window.setCentralWidget(main_widget)
             window.resize(1200, 900)
             window.show()
             app.exec()
