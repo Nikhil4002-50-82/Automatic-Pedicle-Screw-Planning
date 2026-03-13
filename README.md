@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements a **geometry-based pedicle screw planning system** for lumbar vertebrae using CT scan data.
+This project implements a geometry-based pedicle screw planning system for lumbar vertebrae using CT scan data.
 
 The system automatically:
 
@@ -13,9 +13,9 @@ The system automatically:
 * Calculates safety margins
 * Generates a 3D surgical-style visualization
 
-The algorithm is fully automatic and works directly on **3D CT scan data (NIfTI format).**
+The algorithm is fully automatic and works directly on 3D CT scan data (NIfTI format).
 
-This project is intended for **research and educational purposes.**
+This project is intended for research.
 
 ## Features
 
@@ -34,7 +34,7 @@ The system automatically finds:
 * Left pedicle center
 * Right pedicle center
 
-It selects the **thickest bone region** inside each pedicle.
+It selects the thickest bone region inside each pedicle.
 
 ### Automatic Screw Planning
 
@@ -46,7 +46,7 @@ For each vertebra (L1–L5), the algorithm:
 * Checks if screw stays inside bone
 * Calculates safety margin
 
-Then selects the **best safe screw trajectory.**
+Then selects the best safe screw trajectory.
 
 ### Safety Verification
 
@@ -173,149 +173,6 @@ Final output includes:
 * Vertebra surface
 * Screw cylinders
 * Entry points
-
-## How to Run Locally
-
-### Step 1 — Install Python
-
-Install Python 3.10 or newer.
-
-Check version:
-
-```
-python --version
-```
-
-### Step 2 — Create Virtual Environment
-
-Create environment:
-
-```
-python -m venv pedicle_env
-```
-
-Activate environment:
-
-#### Windows
-
-```
-pedicle_env\Scripts\activate
-```
-
-#### Linux / Mac
-
-```
-source pedicle_env/bin/activate
-```
-
-### Step 3 — Install Required Packages
-
-Run:
-
-```
-pip install numpy
-pip install nibabel
-pip install scipy
-pip install scikit-learn
-pip install scikit-image
-pip install plotly
-pip install totalsegmentator
-```
-
-Or install everything at once:
-
-```
-pip install numpy nibabel scipy scikit-learn scikit-image plotly totalsegmentator
-```
-
-### Step 4 — Activate TotalSegmentator License
-
-Before running segmentation:
-
-```
-export TOTALSEG_LICENSE=""
-```
-
-Windows:
-
-```
-set TOTALSEG_LICENSE=
-```
-
-### Step 5 — Prepare Dataset
-
-Place CT scan:
-
-```
-SpineData/
- └── case_002/
-      └── case_0000.nii
-```
-
-### Step 6 — Run the Program
-
-Run:
-
-```
-python main.py
-```
-
-The program will:
-
-1. Segment vertebrae
-2. Plan screws
-3. Generate visualization
-
-## Input Requirements
-
-### CT Scan Format
-
-* NIfTI (.nii or .nii.gz)
-
-### Required Region
-
-Lumbar spine:
-
-* L1
-* L2
-* L3
-* L4
-* L5
-
-## Output
-
-### Console Output
-
-Example:
-
-```
-L4
-Left Screw Found
-Diameter: 6.5 mm
-Length: 33 mm
-Safety Margin: 1.2 mm
-```
-
-### Visualization Output
-
-Interactive 3D model showing:
-
-* Vertebrae
-* Screws
-* Entry points
-
-## Project Structure Example
-
-```
-project/
-│
-├── main.py
-├── README.md
-│
-└── SpineData/
-    └── case_002/
-         └── case_0000.nii
-```
 
 ## Important Notes
 
