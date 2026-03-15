@@ -242,14 +242,14 @@ def visualize_surgical_plan(vertsWorld, faces, resultsList, volume_path=None):
     fig.update_layout(
         title=f"Pedicle Screw Planner Visualization — {volume_name}",
         scene=dict(aspectmode='data'),
-        height=650,  # Reduced height for less vertical space
+        height=650,
         margin=dict(l=0, r=0, t=60, b=0),
         shapes=[
             dict(
                 type="rect",
                 xref="paper", yref="paper",
-                x0=0.02, y0=0.18, x1=0.82, y1=0.98,  # Adjust as needed for plot area
-                line=dict(color="black", width=2),
+                x0=0.05, y0=-0.03, x1=0.95, y1=0.92,  # Lowered bottom edge even further
+                line=dict(color="black", width=4),
                 fillcolor="rgba(0,0,0,0)",
                 layer="above"
             )
