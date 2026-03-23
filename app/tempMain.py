@@ -1,6 +1,6 @@
 import os
 from mesh_builder import build_vertebra_mesh
-from geometryV2 import run_planner
+from geometryV4 import run_planner
 from visualizerV2 import visualize_surgical_plan
 
 def main():

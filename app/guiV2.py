@@ -14,7 +14,7 @@ from PyQt5.QtGui import QFont, QPixmap, QColor
 # Importing your existing modules
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometryV2 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from geometryV3 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
 from visualizerV2 import visualize_surgical_plan
 
 # ---------- REAL TIME TERMINAL STREAM ----------
@@ -115,7 +115,7 @@ class GUI(QWidget):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        title = QLabel("PEDICLE SCREW PLANNING SYSTEM")
+        title = QLabel("GEOMETRY BASED PEDICLE SCREW PLANNING SYSTEM")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
         title.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(title)
