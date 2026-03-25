@@ -508,6 +508,7 @@ def plan_l5_pedicle_screw(
     anatomical_axes: Optional[np.ndarray] = None,
     pedicle_center: Optional[np.ndarray] = None,
     anterior_target: Optional[np.ndarray] = None,
+    forced_trajectory_world: Optional[np.ndarray] = None,
 ) -> Dict:
     """
     Plan a single L5 pedicle screw trajectory.
@@ -540,6 +541,8 @@ def plan_l5_pedicle_screw(
         guaranteeing correct anterior/medial projection.
         When None, the trajectory stays in a local abstract frame (suitable for
         standalone/unit-test usage).
+    forced_trajectory_world : array-like, shape (3,), optional
+        If provided, completely bypasses angle computation and forces this exact trajectory vector.
 
     Returns
     -------
@@ -569,7 +572,14 @@ def plan_l5_pedicle_screw(
     )
 
     # 1b. Compute robust world coordinates if axes are provided
-    if (
+    if forced_trajectory_world is not None:
+        print("  — Step 1b: Using forced world trajectory (bypassing synthetic angles) —")
+        trajectory_world = np.asarray(forced_trajectory_world, dtype=float)
+        # normalize just in case
+        trajectory_world = trajectory_world / np.linalg.norm(trajectory_world)
+        print(f"  [WorldTransform] Forced direction = {np.round(trajectory_world, 6)}")
+        print()
+    elif (
         anatomical_axes is not None
         and pedicle_center is not None
         and anterior_target is not None

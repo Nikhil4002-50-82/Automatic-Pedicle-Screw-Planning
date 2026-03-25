@@ -1,5 +1,5 @@
 import os
-from geometry_2 import run_planner
+from geometry import run_planner
 from visualizer import visualize_surgical_plan
 
 def plan_and_visualize_geometry():

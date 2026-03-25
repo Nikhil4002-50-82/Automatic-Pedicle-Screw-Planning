@@ -332,7 +332,7 @@ def plan_and_visualize_l5():
     print(f"[Runner] Found segment: label={labelVal} → {name}")
 
     # --- Compute robust L5 anatomical frame ---
-    from geometry_2 import computeStableFrameL5
+    from analytical_geometry import computeStableFrameL5
     dist = computeDistance(mask, spacing)
     centroid, axes = computeStableFrameL5(mask, affine, dist)
     siAxis, lrAxis, apAxis = axes
@@ -397,107 +397,58 @@ def plan_and_visualize_l5():
     print(f"[Runner] Final Right center = {np.round(final_rCenter, 2)}")
 
     from analytical_geometry import cylinder_safe
-    
-    def batched_cylinder_safe(points, d, radius, maskFloat, affine):
-        # points: (N, 3) array of center points along the ray
-        # Returns: (N,) boolean array, True if all cylinder offsets are inside bone
-        import nibabel as nib
-        from scipy.ndimage import map_coordinates
-        invAff = np.linalg.inv(affine)
-        n_points = points.shape[0]
-        # Orthonormal basis to d
-        v = np.array([1, 0, 0]) if abs(d[0]) < 0.9 else np.array([0, 1, 0])
-        u1 = np.cross(d, v)
-        u1 /= np.linalg.norm(u1)
-        u2 = np.cross(d, u1)
-        angles = np.linspace(0, 2 * np.pi, 8, endpoint=False)
-        offsets = np.array([radius * (np.cos(a) * u1 + np.sin(a) * u2) for a in angles])  # (8, 3)
-        # For each point, add all offsets
-        all_points = points[:, None, :] + offsets[None, :, :]  # (N, 8, 3)
-        all_points_flat = all_points.reshape(-1, 3)
-        vox = nib.affines.apply_affine(invAff, all_points_flat)
-        # Check bounds
-        in_bounds = np.all((vox >= 0) & (vox < (np.array(maskFloat.shape) - 1)), axis=1)
-        vals = np.zeros(vox.shape[0], dtype=np.float32)
-        valid_idx = np.where(in_bounds)[0]
-        if valid_idx.size > 0:
-            vals[valid_idx] = map_coordinates(maskFloat, [vox[valid_idx,0], vox[valid_idx,1], vox[valid_idx,2]], order=1)
-        vals = vals.reshape(n_points, 8)
-        # A point is safe if all 8 offsets are inside bone (val >= 0.5)
-        return np.all(vals >= 0.5, axis=1)
 
-
-    for side, true_center in [
-        ("left", final_lCenter),
-        ("right", final_rCenter),
+    for side, true_center, p_width, p_height in [
+        ("left", final_lCenter, lWidth, lHeight),
+        ("right", final_rCenter, rWidth, rHeight),
     ]:
         print(f"\n--- Constructing {side.capitalize()} Trajectory ---")
-        print(f"[Runner] Running Generalized Volumetric Grid Search for {side} pedicle...")
+        
+        # 1. Deterministic trajectory calculation 
+        tpa = 25.0
+        # The user requested to LOWER the posterior entry point. 
+        # By setting a positive Sagittal Pedicle Angle (SPA), we tilt the anterior tip SUPERIORLY.
+        # Pivoting around the pedicle center, this mathematically drops the posterior entry point INFERIORLY.
+        spa = 10.0  
 
-        # --- Crop mask and distance arrays to a local region around the pedicle center ---
-        crop_mm = 20.0  # half-width in mm (so 40mm box)
-        # Convert world center to voxel
-        import nibabel as nib
-        center_vox = np.round(nib.affines.apply_affine(np.linalg.inv(affine), true_center)).astype(int)
-        # Compute crop bounds
-        spacing = np.array(spacing)
-        crop_vox = np.ceil(crop_mm / spacing).astype(int)
-        min_idx = np.maximum(center_vox - crop_vox, 0)
-        max_idx = np.minimum(center_vox + crop_vox + 1, mask.shape)
-        slices = tuple(slice(min_idx[d], max_idx[d]) for d in range(3))
-        mask_crop = mask[slices]
-        dist_crop = dist[slices]
-        maskFloat_crop = mask_crop.astype(np.float32)
-        # Compute new affine for the cropped region
-        offset = min_idx
-        affine_crop = affine.copy()
-        affine_crop[:3, 3] += affine[:3, :3] @ offset
+        # Calculate base trajectory direction
+        test_dir = compute_world_trajectory(
+            center=true_center,
+            anterior_target=anterior_center,
+            anatomical_axes=axes,
+            transverse_pedicle_angle=tpa,
+            sagittal_pedicle_angle=spa,
+            side=side
+        )
 
-        # Adjust true_center and centroid to cropped region (world to voxel, then subtract offset, then back to world)
-        def to_crop_world(pt):
-            pt_vox = nib.affines.apply_affine(np.linalg.inv(affine), pt) - offset
-            return nib.affines.apply_affine(affine_crop, pt_vox)
-        true_center_crop = to_crop_world(true_center)
-        centroid_crop = to_crop_world(centroid)
+        # 2. Find posterior ENTRY POINT mathematically
+        # DO NOT assume PIP is the entry point. Raycast BACKWARD to find true surface entry.
+        best_entry = robust_raycast_entry_point(true_center, test_dir, maskFloat, affine)
+        best_bone_length = measure_bone_path_length(best_entry, test_dir, maskFloat, affine)
+        
+        # 3. Let our trajectory planner execute to evaluate optimal length & diameter
+        plan = plan_l5_pedicle_screw(
+            entry_point=best_entry,
+            pedicle_width=p_width,
+            pedicle_height=p_height,
+            vertebral_body_depth=best_bone_length,
+            transverse_pedicle_angle=tpa,
+            sagittal_pedicle_angle=spa,
+            safety_margin=2.0,
+            side=side,
+            anatomical_axes=axes,
+            pedicle_center=true_center,
+            anterior_target=anterior_center
+        )
 
-        best_score = -1.0
-        best_traj = None
-        best_entry = None
-        best_bone_length = 0.0
-
-        lr_angles = np.linspace(10, 40, 10)
-        si_angles = np.linspace(-10, 20, 8)
-        angle_args = []
-        for lrAng in lr_angles:
-            for siAng in si_angles:
-                angle_args.append((lrAng, siAng, true_center_crop, centroid_crop, lrAxis, siAxis, apAxis, maskFloat_crop, affine_crop, mask_crop))
-
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = list(executor.map(angle_eval, angle_args))
-
-        for res in results:
-            if res is None:
-                continue
-            safe_len, test_dir, entry, path_len = res
-            if safe_len > best_score:
-                best_score = safe_len
-                best_traj = test_dir
-                best_entry = entry
-                best_bone_length = path_len
-
-        if best_traj is None:
-            print(f"[Runner] ERROR: Could not find any safe valid trajectory for {side} pedicle!")
+        if plan is None:
+            print(f"[Runner] ERROR: Trajectory formulation totally failed for {side} pedicle!")
             continue
 
-        print(f"[Runner] Optimal {side.capitalize()} Trajectory: Safe inner core length = {best_score:.1f} mm")
-        print(f"[Runner] Trajectory Vector: {np.round(best_traj, 4)}")
-
-        # 3. Sink the screw
-        # Use a safe clinical maximum
-        screw_length = min(best_bone_length, 45.0)
-        
-        tip = best_entry + best_traj * screw_length
-        exit_point = best_entry + best_traj * best_bone_length
+        best_traj = plan["trajectory_vector"]
+        screw_length = plan["recommended_screw_length"]
+        screw_diam = plan["recommended_screw_diameter"]
+        tip = plan["tip_point"]
         
         resultsList.append({
             "vertebra": "L5",

@@ -65,6 +65,49 @@ def computeStableFrame(mask, affine):
     return centroid, np.vstack([siAxis, lrAxis, apAxis])
 
 
+def computeStableFrameL5(mask,affine,dist):
+    # L5 has large transverse processes that can corrupt whole-bone PCA.
+    # Anchor the frame in the vertebral body and run PCA on a local body region.
+    coords = np.argwhere(mask)
+    coordsWorld = nib.affines.apply_affine(affine,coords)
+    max_idx = np.unravel_index(np.argmax(dist), dist.shape)
+    centroid = nib.affines.apply_affine(affine,max_idx)
+    bodyRadiusMM = 22.0
+    bodyMask = np.linalg.norm(coordsWorld-centroid, axis=1) < bodyRadiusMM
+    bodyCoordsWorld = coordsWorld[bodyMask]
+    if len(bodyCoordsWorld) < 100:
+        bodyCoordsWorld = coordsWorld
+    pca = PCA(n_components=3)
+    pca.fit(bodyCoordsWorld-centroid)
+    axes = pca.components_
+    worldZ = np.array([0,0,1])
+    siAxis = axes[np.argmax(np.abs(axes@worldZ))]
+    if np.dot(siAxis,worldZ) < 0:
+        siAxis = -siAxis
+    tempAxis = axes[np.argmin(np.abs(axes@worldZ))]
+    lrAxis = tempAxis - np.dot(tempAxis,siAxis)*siAxis
+    lrAxis /= np.linalg.norm(lrAxis)
+    apAxis = np.cross(siAxis,lrAxis)
+    apAxis /= np.linalg.norm(apAxis)
+    bodyRel = bodyCoordsWorld-centroid
+    bodyAp = bodyRel@apAxis
+    bodyLr = bodyRel@lrAxis
+    anteriorMask = bodyAp > np.percentile(bodyAp,75)
+    posteriorMask = bodyAp < np.percentile(bodyAp,25)
+    if np.any(anteriorMask) and np.any(posteriorMask):
+        anteriorWidth = np.mean(np.abs(bodyLr[anteriorMask]))
+        posteriorWidth = np.mean(np.abs(bodyLr[posteriorMask]))
+        if anteriorWidth < posteriorWidth:
+            apAxis = -apAxis
+    # Whole-vertebra COM is pulled posterior by the posterior elements.
+    # Enforce AP so it points from the posterior-heavy whole COM toward the body center.
+    wholeCentroid = coordsWorld.mean(axis=0)
+    if np.dot(apAxis, centroid - wholeCentroid) < 0:
+        apAxis = -apAxis
+    return centroid,np.vstack([siAxis,lrAxis,apAxis])
+
+
+
 def computeDistance(mask, spacing):
     return distance_transform_edt(mask, sampling=spacing)
 

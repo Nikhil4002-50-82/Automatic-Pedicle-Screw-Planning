@@ -322,3 +322,4 @@ project/
 * Not intended for clinical use yet
 * Results depend on segmentation quality
 * CT scans must include lumbar vertebrae
+* If TotalSegmentator fails with **CUDA out of memory**, force CPU mode via `PEDICLE_TOTALSEG_DEVICE=cpu` (Windows: `set PEDICLE_TOTALSEG_DEVICE=cpu`, Linux/Mac: `export PEDICLE_TOTALSEG_DEVICE=cpu`)
