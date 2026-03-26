@@ -1,238 +1,353 @@
 import numpy as np
 import nibabel as nib
-from scipy.ndimage import distance_transform_edt, label as cc_label
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import distance_transform_edt, label as cc_label, map_coordinates
 from sklearn.decomposition import PCA
 
-# Minimum number of voxels required to accept a vertebra
+# --- Global Constraints ---
 voxelThreshold = 5000
+stepMM = 0.5
+minLengthMM = 20 
+maxDepthRatio = 0.8 
 
-# Possible screw diameters (in mm)
-globalDiameters = [8.5,7.5,7.0,6.5,5.5,5.0,4.5,4.0]
+# Standard Lumbar Hardware (mm)
+globalDiameters = [8.5, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5, 4.0]
 
-# Maximum allowed screw size for each vertebra
-maxDiameterPerLevel = {
-    "L1":6.5,"L2":7.0,"L3":7.5,"L4":8.5,"L5":8.5
+# --- Clinical Diameter Standards ---
+CLINICAL_LIMITS = {
+    "L1": (4.5, 6.0),
+    "L2": (4.5, 6.0),
+    "L3": (5.0, 6.5),
+    "L4": (6.0, 7.5),
+    "L5": (6.5, 8.5)
 }
 
-# Step size when moving inside bone (in mm)
-stepMM = 0.5
-
-# Minimum screw length required (in mm)
-minLengthMM = 18
-
-# Allowed angle variation (degrees)
-directionConeDegLR = 35
-directionConeDegSI = 20
-
-# Number of angle samples to test
-directionSamplesLR = 13
-directionSamplesSI = 9
-
-# Weights used to calculate best screw score
+# --- FINAL BALANCED WEIGHTS ---
+wDiam = 15.0
+wConv = 20.0
 wDT = 5.0
-wLen = 1.5
-wTilt = 0.5
+wLen = 1.0
+wTilt = 10.0
+wMidline = 50.0
 
-# Map segmentation labels to vertebra names
-labelMap = {5:"L1",4:"L2",3:"L3",2:"L4",1:"L5"}
+labelMap = {5:"L1", 4:"L2", 3:"L3", 2:"L4", 1:"L5"}
 
 def loadNifti(path):
-    # Load 3D medical image
     nii = nib.load(path)
     return nii.get_fdata(), nii.header.get_zooms(), nii.affine
 
+
 def getValidLabels(seg):
-    # Find all vertebra labels except background
     valid = []
     uniqueLabels = np.unique(seg)
     uniqueLabels = uniqueLabels[uniqueLabels != 0]
+
     for labelVal in uniqueLabels:
+
         mask = (seg == labelVal)
-        labeled,_ = cc_label(mask)
+
+        labeled, _ = cc_label(mask)
+
         sizes = np.bincount(labeled.ravel())
         sizes[0] = 0
+
         if len(sizes) == 0:
             continue
+
         largest = np.argmax(sizes)
+
         component = (labeled == largest)
-        # Accept only large enough vertebra parts
+
         if np.sum(component) > voxelThreshold:
-            valid.append((int(labelVal),component))
+            valid.append((int(labelVal), component))
+
     return valid
 
-def computeStableFrame(mask,affine):
-    # Get 3D coordinates of vertebra
+
+def computeStableFrame(mask, affine):
+
     coords = np.argwhere(mask)
-    coordsWorld = nib.affines.apply_affine(affine,coords)
+
+    coordsWorld = nib.affines.apply_affine(affine, coords)
+
     centroid = coordsWorld.mean(axis=0)
-    # Use PCA to find main directions of bone
+
     pca = PCA(n_components=3)
-    pca.fit(coordsWorld-centroid)
+
+    pca.fit(coordsWorld - centroid)
+
     axes = pca.components_
+
     worldZ = np.array([0,0,1])
-    # Find vertical axis (head to toe)
-    siAxis = axes[np.argmax(np.abs(axes@worldZ))]
-    if np.dot(siAxis,worldZ) < 0:
+
+    siAxis = axes[np.argmax(np.abs(axes @ worldZ))]
+
+    if np.dot(siAxis, worldZ) < 0:
         siAxis = -siAxis
-    tempAxis = axes[np.argmin(np.abs(axes@worldZ))]
-    # Find left-right axis
-    lrAxis = tempAxis - np.dot(tempAxis,siAxis)*siAxis
+
+    tempAxis = axes[np.argmin(np.abs(axes @ worldZ))]
+
+    lrAxis = tempAxis - np.dot(tempAxis, siAxis) * siAxis
     lrAxis /= np.linalg.norm(lrAxis)
-    # Find front-back axis
-    apAxis = np.cross(siAxis,lrAxis)
+
+    apAxis = np.cross(siAxis, lrAxis)
     apAxis /= np.linalg.norm(apAxis)
-    return centroid,np.vstack([siAxis,lrAxis,apAxis])
 
-def computeDistance(mask,spacing):
-    # Compute distance from bone boundary
-    return distance_transform_edt(mask,sampling=spacing)
+    relAP = (coordsWorld - centroid) @ apAxis
 
-def pedicleCenters(mask,dist,centroid,axes,affine):
-    # Find best center point inside left and right pedicles
+    totalDepth = np.percentile(relAP,95) - np.percentile(relAP,5)
+
+    return centroid, np.vstack([siAxis, lrAxis, apAxis]), totalDepth
+
+
+def computeDistance(mask, spacing):
+
+    return distance_transform_edt(mask, sampling=spacing)
+
+
+def pedicleCenters(mask, dist, centroid, axes, affine):
+
     coords = np.argwhere(mask)
-    coordsWorld = nib.affines.apply_affine(affine,coords)
-    siAxis,lrAxis,apAxis = axes
-    rel = coordsWorld-centroid
-    siVals = rel@siAxis
-    lrVals = rel@lrAxis
-    apVals = rel@apAxis
-    midMask = np.abs(siVals)<np.percentile(np.abs(siVals),35)
-    posteriorMask = apVals<np.percentile(apVals,40)
-    leftMask = lrVals<0
-    rightMask = lrVals>0
-    leftCoords = coords[midMask&posteriorMask&leftMask]
-    rightCoords = coords[midMask&posteriorMask&rightMask]
-    if len(leftCoords)<30 or len(rightCoords)<30:
-        return None,None
-    # Choose point with maximum thickness
-    lVox = leftCoords[np.argmax(dist[leftCoords[:,0],leftCoords[:,1],leftCoords[:,2]])]
-    rVox = rightCoords[np.argmax(dist[rightCoords[:,0],rightCoords[:,1],rightCoords[:,2]])]
-    lMM = nib.affines.apply_affine(affine,lVox)
-    rMM = nib.affines.apply_affine(affine,rVox)
-    return lMM,rMM
 
-def findEntry(center,axes,maskFloat,affine):
-    # Move from center toward back to find entry point
-    siAxis,lrAxis,apAxis = axes
+    coordsWorld = nib.affines.apply_affine(affine, coords)
+
+    siAxis, lrAxis, apAxis = axes
+
+    rel = coordsWorld - centroid
+
+    midMask = np.abs(rel @ siAxis) < np.percentile(np.abs(rel @ siAxis),35)
+
+    posteriorMask = (rel @ apAxis) < np.percentile(rel @ apAxis,40)
+
+    lCoords = coords[midMask & posteriorMask & ((rel @ lrAxis) < 0)]
+
+    rCoords = coords[midMask & posteriorMask & ((rel @ lrAxis) > 0)]
+
+    if len(lCoords) < 20 or len(rCoords) < 20:
+        return None, None
+
+    lCenter = nib.affines.apply_affine(
+        affine,
+        lCoords[np.argmax(dist[lCoords[:,0],lCoords[:,1],lCoords[:,2]])]
+    )
+
+    rCenter = nib.affines.apply_affine(
+        affine,
+        rCoords[np.argmax(dist[rCoords[:,0],rCoords[:,1],rCoords[:,2]])]
+    )
+
+    return lCenter, rCenter
+
+
+def findEntry(center, axes, maskFloat, affine, side):
+
+    siAxis, lrAxis, apAxis = axes
+
+    lateralShift = -1.5 if side == "Left" else 1.5
+
+    startP = center + (lrAxis * lateralShift)
+
     direction = -apAxis
+
     invAff = np.linalg.inv(affine)
-    p = center.copy()
-    for _ in range(300):
-        vox = nib.affines.apply_affine(invAff,p)
+
+    p = startP.copy()
+
+    for _ in range(100):
+
+        vox = nib.affines.apply_affine(invAff, p)
+
         if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
             break
-        val = map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
-        if val<0.5:
+
+        if map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0] < 0.5:
             break
-        p += direction*stepMM
-    return p+apAxis*1.0
 
-def cylinderSafe(p,d,radius,maskFloat,affine):
-    # Check if screw cylinder stays inside bone
-    invAff = np.linalg.inv(affine)
-    for angle in np.linspace(0,2*np.pi,8,endpoint=False):
-        offset = radius*(np.cos(angle)*np.cross(d,[0,0,1])+
-                         np.sin(angle)*np.cross(d,[1,0,0]))
-        testPoint = p+offset
-        vox = nib.affines.apply_affine(invAff,testPoint)
-        if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
-            return False
-        val = map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
-        if val<0.5:
-            return False
-    return True
+        p += direction * stepMM
 
-def evaluate(entry,direction,maskFloat,dist,affine,radius,axes):
-    # Check how long and safe a screw path is
-    d = direction/np.linalg.norm(direction)
+    return p + apAxis * 1.5
+
+
+def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, maxAllowedLen, v_name):
+
+    d = direction / np.linalg.norm(direction)
+
+    siAxis, lrAxis, apAxis = axes
+
     invAff = np.linalg.inv(affine)
+
+    if np.dot(d, siAxis) > 0:
+        return None
+
     t = 0
     minDT = 999
-    while True:
-        if t<5:
-            t += stepMM
-            continue
-        p = entry+d*t
+    midlineViolation = 0
+
+    lr_comp = np.dot(d, lrAxis)
+
+    conv = lr_comp if side == "Left" else -lr_comp
+
+    while t < maxAllowedLen:
+
+        p = entry + d*t
+
         vox = nib.affines.apply_affine(invAff,p)
+
         if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
             break
-        maskVal = map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
-        if maskVal<0.5:
-            break
-        dtVal = map_coordinates(dist,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
-        minDT = min(minDT,dtVal)
-        if not cylinderSafe(p,d,radius,maskFloat,affine):
-            break
-        t += stepMM
-    # Reject if too short or unsafe
-    if t<minLengthMM:
-        return None
-    if minDT-radius<=0:
-        return None
-    siAxis = axes[0]
-    tilt = abs(np.dot(d,siAxis))
-    # Final score calculation
-    score = wDT*minDT + wLen*(t/10) - wTilt*tilt
-    return score,t,minDT,p
 
-def optimize(center,axes,maskFloat,dist,affine,diameters):
-    # Try all diameters and angles to find best screw
+        if map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0] < 0.5:
+            break
+
+        relP = p - centroid
+
+        lrPos = np.dot(relP, lrAxis)
+
+        if (side=="Left" and lrPos>1.5) or (side=="Right" and lrPos<-1.5):
+            midlineViolation += 1
+
+        dtVal = map_coordinates(dist,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
+
+        if 5.0 < t < 30.0:
+            minDT = min(minDT,dtVal)
+
+        t += stepMM
+
+    if t < minLengthMM:
+        return None
+
+    max_safe = (minDT*2) - 0.5
+
+    min_limit, max_limit = CLINICAL_LIMITS.get(v_name,(4.0,8.5))
+
+    diam = 0.0
+
+    for d_val in globalDiameters:
+        if d_val <= max_safe and d_val <= max_limit:
+            diam = d_val
+            break
+
+    tilt = abs(np.dot(d,siAxis))
+
+    score = (
+        (wDiam*diam)
+        + (wConv*conv*15)
+        + (wDT*minDT)
+        - (wTilt*tilt)
+        - (wMidline*midlineViolation)
+    )
+
+    return score,t,minDT,p,diam
+
+
+def optimize(center, axes, side, maskFloat, dist, affine, centroid, totalDepth, v_name):
+
     if center is None:
         return None
-    siAxis,lrAxis,apAxis = axes
-    entry = findEntry(center,axes,maskFloat,affine)
+
+    entry = findEntry(center, axes, maskFloat, affine, side)
+
+    maxAllowedLen = totalDepth * maxDepthRatio
+
     best = None
-    for diam in diameters:
-        radius = diam/2
-        for lrAng in np.linspace(-directionConeDegLR,directionConeDegLR,directionSamplesLR):
-            for siAng in np.linspace(-directionConeDegSI,directionConeDegSI,directionSamplesSI):
-                direction = (apAxis +
-                             np.tan(np.deg2rad(lrAng))*lrAxis +
-                             np.tan(np.deg2rad(siAng))*siAxis)
-                r = evaluate(entry,direction,maskFloat,dist,affine,radius,axes)
-                if r is None:
-                    continue
-                score,length,minDT,tip = r
-                if best is None or score>best[0]:
-                    best = (score,entry,tip,length,minDT,diam)
+
+    angles = np.linspace(5,40,25) if side=="Left" else np.linspace(-40,-5,25)
+
+    # ---- NEW: FORCE TRAJECTORY THROUGH PEDICLE CENTER ----
+    baseDir = center - entry
+    baseDir = baseDir / np.linalg.norm(baseDir)
+
+    for lrAng in angles:
+
+        for siAng in np.linspace(-10,0,11):
+
+            direction = (
+                baseDir
+                + np.tan(np.deg2rad(lrAng))*axes[1]
+                + np.tan(np.deg2rad(siAng))*axes[0]
+            )
+
+            res = evaluate(
+                entry,
+                direction,
+                side,
+                maskFloat,
+                dist,
+                affine,
+                axes,
+                centroid,
+                maxAllowedLen,
+                v_name
+            )
+
+            if res and (best is None or res[0] > best[0]):
+
+                best = (
+                    res[0],
+                    entry,
+                    res[3],
+                    res[1],
+                    res[2],
+                    lrAng,
+                    siAng,
+                    res[4]
+                )
+
     return best
 
+
 def run_planner(segPath):
-    # Main function that plans screws for all vertebrae
+
     resultsList = []
-    print("GEOMETRY BASED PEDICLE SCREW PLANNER")
+
     seg,spacing,affine = loadNifti(segPath)
+
     validSegments = getValidLabels(seg)
-    for labelVal,mask in validSegments:
+
+    for labelVal,mask in sorted(validSegments,reverse=True):
+
         name = labelMap.get(labelVal,str(labelVal))
-        maxDiam = maxDiameterPerLevel.get(name,max(globalDiameters))
-        diameters = [d for d in globalDiameters if d<=maxDiam]
-        print(name)
-        print("Tested Diameters:",diameters)
-        centroid,axes = computeStableFrame(mask,affine)
+
+        centroid,axes,totalDepth = computeStableFrame(mask,affine)
+
         dist = computeDistance(mask,spacing)
+
         maskFloat = mask.astype(np.float32)
+
         lCenter,rCenter = pedicleCenters(mask,dist,centroid,axes,affine)
+
         for side,center in [("Left",lCenter),("Right",rCenter)]:
-            if center is None:
-                print(side+": NO SAFE PATH")
-                continue
-            result = optimize(center,axes,maskFloat,dist,affine,diameters)
-            if result is None:
-                print(side+": NO SAFE PATH")
-                continue
-            score,entry,tip,length,minDT,diam = result
-            resultsList.append({
-                "vertebra":name,
-                "side":side,
-                "entry":entry,
-                "tip":tip,
-                "diameter":diam
-            })
-            print(side,"Screw Found")
-            print("Diameter:",diam,"mm")
-            print("Length:",round(length,1),"mm")
-            print("Safety Margin:",round(minDT-diam/2,2),"mm")
-            print()
+
+            res = optimize(
+                center,
+                axes,
+                side,
+                maskFloat,
+                dist,
+                affine,
+                centroid,
+                totalDepth,
+                name
+            )
+
+            if res:
+
+                score,entry,tip,length,minDT,lrAng,siAng,diam = res
+
+                resultsList.append({
+                    "vertebra":name,
+                    "side":side,
+                    "entry":entry,
+                    "tip":tip,
+                    "diameter":diam,
+                    "length":length,
+                    "axial_angle":lrAng,
+                    "sagittal_angle":siAng
+                })
+
+                print(
+                    f"{name} {side}: Diam {diam}mm, "
+                    f"Axial {round(lrAng,1)}°, "
+                    f"Sagittal {round(siAng,1)}°"
+                )
+
     return resultsList
