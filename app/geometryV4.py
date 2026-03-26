@@ -21,6 +21,15 @@ CLINICAL_LIMITS = {
     "L5": (6.5, 8.5)
 }
 
+# --- Clinical Length Limits (mm) ---
+LENGTH_LIMITS = {
+    "L1": 45,
+    "L2": 50,
+    "L3": 50,
+    "L4": 55,
+    "L5": 60
+}
+
 # --- FINAL BALANCED WEIGHTS ---
 wDiam = 15.0
 wConv = 20.0
@@ -35,52 +44,35 @@ def loadNifti(path):
     nii = nib.load(path)
     return nii.get_fdata(), nii.header.get_zooms(), nii.affine
 
-
 def getValidLabels(seg):
     valid = []
     uniqueLabels = np.unique(seg)
     uniqueLabels = uniqueLabels[uniqueLabels != 0]
-
     for labelVal in uniqueLabels:
-
         mask = (seg == labelVal)
-
         labeled, _ = cc_label(mask)
-
         sizes = np.bincount(labeled.ravel())
         sizes[0] = 0
-
-        if len(sizes) == 0:
-            continue
-
+        if len(sizes) == 0: continue
         largest = np.argmax(sizes)
-
         component = (labeled == largest)
-
         if np.sum(component) > voxelThreshold:
             valid.append((int(labelVal), component))
-
     return valid
 
-
 def computeStableFrame(mask, affine):
-
     coords = np.argwhere(mask)
-
     coordsWorld = nib.affines.apply_affine(affine, coords)
 
     centroid = coordsWorld.mean(axis=0)
 
     pca = PCA(n_components=3)
-
     pca.fit(coordsWorld - centroid)
-
     axes = pca.components_
 
     worldZ = np.array([0,0,1])
 
     siAxis = axes[np.argmax(np.abs(axes @ worldZ))]
-
     if np.dot(siAxis, worldZ) < 0:
         siAxis = -siAxis
 
@@ -93,33 +85,25 @@ def computeStableFrame(mask, affine):
     apAxis /= np.linalg.norm(apAxis)
 
     relAP = (coordsWorld - centroid) @ apAxis
-
     totalDepth = np.percentile(relAP,95) - np.percentile(relAP,5)
 
     return centroid, np.vstack([siAxis, lrAxis, apAxis]), totalDepth
 
-
 def computeDistance(mask, spacing):
-
     return distance_transform_edt(mask, sampling=spacing)
-
 
 def pedicleCenters(mask, dist, centroid, axes, affine):
 
     coords = np.argwhere(mask)
-
     coordsWorld = nib.affines.apply_affine(affine, coords)
 
     siAxis, lrAxis, apAxis = axes
-
     rel = coordsWorld - centroid
 
     midMask = np.abs(rel @ siAxis) < np.percentile(np.abs(rel @ siAxis),35)
-
     posteriorMask = (rel @ apAxis) < np.percentile(rel @ apAxis,40)
 
     lCoords = coords[midMask & posteriorMask & ((rel @ lrAxis) < 0)]
-
     rCoords = coords[midMask & posteriorMask & ((rel @ lrAxis) > 0)]
 
     if len(lCoords) < 20 or len(rCoords) < 20:
@@ -137,13 +121,11 @@ def pedicleCenters(mask, dist, centroid, axes, affine):
 
     return lCenter, rCenter
 
-
 def findEntry(center, axes, maskFloat, affine, side):
 
     siAxis, lrAxis, apAxis = axes
 
     lateralShift = -1.5 if side == "Left" else 1.5
-
     startP = center + (lrAxis * lateralShift)
 
     direction = -apAxis
@@ -153,7 +135,6 @@ def findEntry(center, axes, maskFloat, affine, side):
     p = startP.copy()
 
     for _ in range(100):
-
         vox = nib.affines.apply_affine(invAff, p)
 
         if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
@@ -172,7 +153,6 @@ def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, ma
     d = direction / np.linalg.norm(direction)
 
     siAxis, lrAxis, apAxis = axes
-
     invAff = np.linalg.inv(affine)
 
     if np.dot(d, siAxis) > 0:
@@ -183,23 +163,30 @@ def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, ma
     midlineViolation = 0
 
     lr_comp = np.dot(d, lrAxis)
-
     conv = lr_comp if side == "Left" else -lr_comp
+
+    t_exit = None  # --- NEW ---
 
     while t < maxAllowedLen:
 
         p = entry + d*t
-
         vox = nib.affines.apply_affine(invAff,p)
 
         if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
+            t_exit = t
             break
 
-        if map_coordinates(maskFloat,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0] < 0.5:
+        inside = map_coordinates(
+            maskFloat,
+            [[vox[0]],[vox[1]],[vox[2]]],
+            order=1
+        )[0]
+
+        if inside < 0.5:
+            t_exit = t
             break
 
         relP = p - centroid
-
         lrPos = np.dot(relP, lrAxis)
 
         if (side=="Left" and lrPos>1.5) or (side=="Right" and lrPos<-1.5):
@@ -212,15 +199,20 @@ def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, ma
 
         t += stepMM
 
-    if t < minLengthMM:
+    if t_exit is None:
+        t_exit = t
+
+    # --- Apply 2 mm safety margin ---
+    safetyMargin = 3.0
+    t_safe = t_exit - safetyMargin
+
+    if t_safe < minLengthMM:
         return None
 
     max_safe = (minDT*2) - 0.5
-
     min_limit, max_limit = CLINICAL_LIMITS.get(v_name,(4.0,8.5))
 
     diam = 0.0
-
     for d_val in globalDiameters:
         if d_val <= max_safe and d_val <= max_limit:
             diam = d_val
@@ -236,7 +228,9 @@ def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, ma
         - (wMidline*midlineViolation)
     )
 
-    return score,t,minDT,p,diam
+    safe_tip = entry + d * t_safe
+
+    return score, t_safe, minDT, safe_tip, diam
 
 
 def optimize(center, axes, side, maskFloat, dist, affine, centroid, totalDepth, v_name):
@@ -246,22 +240,19 @@ def optimize(center, axes, side, maskFloat, dist, affine, centroid, totalDepth, 
 
     entry = findEntry(center, axes, maskFloat, affine, side)
 
-    maxAllowedLen = totalDepth * maxDepthRatio
+    geomLimit = totalDepth * maxDepthRatio
+    clinicalLimit = LENGTH_LIMITS.get(v_name, 50)
+    maxAllowedLen = min(geomLimit, clinicalLimit)
 
     best = None
 
     angles = np.linspace(5,40,25) if side=="Left" else np.linspace(-40,-5,25)
 
-    # ---- NEW: FORCE TRAJECTORY THROUGH PEDICLE CENTER ----
-    baseDir = center - entry
-    baseDir = baseDir / np.linalg.norm(baseDir)
-
     for lrAng in angles:
-
         for siAng in np.linspace(-10,0,11):
 
             direction = (
-                baseDir
+                axes[2]
                 + np.tan(np.deg2rad(lrAng))*axes[1]
                 + np.tan(np.deg2rad(siAng))*axes[0]
             )
@@ -300,7 +291,6 @@ def run_planner(segPath):
     resultsList = []
 
     seg,spacing,affine = loadNifti(segPath)
-
     validSegments = getValidLabels(seg)
 
     for labelVal,mask in sorted(validSegments,reverse=True):
@@ -308,9 +298,7 @@ def run_planner(segPath):
         name = labelMap.get(labelVal,str(labelVal))
 
         centroid,axes,totalDepth = computeStableFrame(mask,affine)
-
         dist = computeDistance(mask,spacing)
-
         maskFloat = mask.astype(np.float32)
 
         lCenter,rCenter = pedicleCenters(mask,dist,centroid,axes,affine)

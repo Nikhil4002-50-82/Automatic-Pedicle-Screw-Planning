@@ -14,8 +14,8 @@ from PyQt5.QtGui import QFont, QPixmap, QColor
 # Importing your existing modules
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometryV3 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
-from visualizerV2 import visualize_surgical_plan
+from geometryV4 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from visualizerV3 import visualize_surgical_plan
 
 # ---------- REAL TIME TERMINAL STREAM ----------
 class LogStream(QObject):
