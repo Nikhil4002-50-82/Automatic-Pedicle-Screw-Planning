@@ -36,7 +36,49 @@ def _orthonormal_basis(direction):
     return unit_direction, normal_1, normal_2
 
 
-def _build_screw_surface(entry, tip, diameter, screw_mode="threaded", resolution=36, axial_steps=48):
+def _build_cylinder_grid(entry, axis, normal_1, normal_2, length, radius, resolution=48, axial_steps=40):
+    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
+    t = np.linspace(0.0, 1.0, axial_steps)
+    theta_grid, t_grid = np.meshgrid(theta, t, indexing="ij")
+    axial_distance = length * t_grid
+
+    x = (
+        entry[0]
+        + axis[0] * axial_distance
+        + radius * (np.cos(theta_grid) * normal_1[0] + np.sin(theta_grid) * normal_2[0])
+    )
+    y = (
+        entry[1]
+        + axis[1] * axial_distance
+        + radius * (np.cos(theta_grid) * normal_1[1] + np.sin(theta_grid) * normal_2[1])
+    )
+    z = (
+        entry[2]
+        + axis[2] * axial_distance
+        + radius * (np.cos(theta_grid) * normal_1[2] + np.sin(theta_grid) * normal_2[2])
+    )
+    return x, y, z
+
+
+def _build_ring_points(center, normal_1, normal_2, radius, resolution=64):
+    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
+    x = center[0] + radius * (np.cos(theta) * normal_1[0] + np.sin(theta) * normal_2[0])
+    y = center[1] + radius * (np.cos(theta) * normal_1[1] + np.sin(theta) * normal_2[1])
+    z = center[2] + radius * (np.cos(theta) * normal_1[2] + np.sin(theta) * normal_2[2])
+    return x, y, z
+
+
+def _build_cap_surface(center, normal_1, normal_2, radius, resolution=48, radial_steps=18):
+    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
+    radial = np.linspace(0.0, radius, radial_steps)
+    theta_grid, radial_grid = np.meshgrid(theta, radial, indexing="ij")
+    x = center[0] + radial_grid * (np.cos(theta_grid) * normal_1[0] + np.sin(theta_grid) * normal_2[0])
+    y = center[1] + radial_grid * (np.cos(theta_grid) * normal_1[1] + np.sin(theta_grid) * normal_2[1])
+    z = center[2] + radial_grid * (np.cos(theta_grid) * normal_1[2] + np.sin(theta_grid) * normal_2[2])
+    return x, y, z
+
+
+def _build_screw_geometry(entry, tip, diameter, screw_mode="threaded", resolution=48, axial_steps=40):
     entry = np.asarray(entry, dtype=float)
     tip = np.asarray(tip, dtype=float)
     direction = tip - entry
@@ -55,35 +97,24 @@ def _build_screw_surface(entry, tip, diameter, screw_mode="threaded", resolution
     if screw_mode == "none":
         return None
 
-    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
-    t = np.linspace(0.0, 1.0, axial_steps)
-    theta_grid, t_grid = np.meshgrid(theta, t, indexing="ij")
+    outer_radius = diameter / 2.0
 
-    base_radius = diameter / 2.0
-    if screw_mode == "threaded":
-        thread_depth = min(0.35, max(0.12, base_radius * 0.12))
-        thread_turns = max(8, int(length / 2.4))
-        radius = base_radius + thread_depth * np.sin(t_grid * thread_turns * 2.0 * np.pi)
-    else:
-        radius = np.full_like(t_grid, base_radius)
-
-    axial_distance = length * t_grid
-    x = (
-        entry[0]
-        + axis[0] * axial_distance
-        + radius * (np.cos(theta_grid) * normal_1[0] + np.sin(theta_grid) * normal_2[0])
-    )
-    y = (
-        entry[1]
-        + axis[1] * axial_distance
-        + radius * (np.cos(theta_grid) * normal_1[1] + np.sin(theta_grid) * normal_2[1])
-    )
-    z = (
-        entry[2]
-        + axis[2] * axial_distance
-        + radius * (np.cos(theta_grid) * normal_1[2] + np.sin(theta_grid) * normal_2[2])
-    )
-    return x, y, z
+    return {
+        "outer_surface": _build_cylinder_grid(
+            entry,
+            axis,
+            normal_1,
+            normal_2,
+            length,
+            outer_radius,
+            resolution=resolution,
+            axial_steps=axial_steps,
+        ),
+        "entry_cap": _build_cap_surface(entry, normal_1, normal_2, outer_radius, resolution=resolution),
+        "tip_cap": _build_cap_surface(tip, normal_1, normal_2, outer_radius, resolution=resolution),
+        "entry_rim": _build_ring_points(entry, normal_1, normal_2, outer_radius, resolution=resolution),
+        "tip_rim": _build_ring_points(tip, normal_1, normal_2, outer_radius, resolution=resolution),
+    }
 
 
 def _build_safety_plane(tip, direction, plane_size=8.0):
@@ -169,6 +200,29 @@ def _is_trace_visible(trace):
     return bool(trace.visible)
 
 
+def _compute_scene_ranges(verts_world, results_list, show_safety_planes=False, fallback_diameter=None):
+    points = [np.asarray(verts_world, dtype=float)]
+    radial_padding = 0.0
+
+    for result in results_list:
+        entry = np.asarray(result["entry"], dtype=float)
+        tip = np.asarray(result["tip"], dtype=float)
+        points.append(np.vstack((entry, tip)))
+        radial_padding = max(radial_padding, _default_visual_diameter(result, fallback_diameter) / 2.0)
+
+    stacked_points = np.vstack(points)
+    mins = np.min(stacked_points, axis=0)
+    maxs = np.max(stacked_points, axis=0)
+    spans = maxs - mins
+    base_padding = np.maximum(spans * 0.06, 2.0)
+
+    if show_safety_planes:
+        base_padding = base_padding + 8.0
+
+    total_padding = base_padding + radial_padding + 1.0
+    return [[mins[idx] - total_padding[idx], maxs[idx] + total_padding[idx]] for idx in range(3)]
+
+
 def _style_config(visual_preset="cinematic", theme="dark"):
     preset = str(visual_preset).strip().lower()
     theme_key = str(theme).strip().lower()
@@ -183,7 +237,7 @@ def _style_config(visual_preset="cinematic", theme="dark"):
             "mesh_opacity": 0.25,
             "mesh_lighting": dict(ambient=0.65, diffuse=0.45, specular=0.08, roughness=0.9, fresnel=0.02),
             "mesh_lightposition": dict(x=110, y=140, z=120),
-            "surface_opacity": 0.92,
+            "surface_opacity": 0.42,
             "surface_lighting": dict(ambient=0.35, diffuse=0.85, specular=0.6, roughness=0.28, fresnel=0.15),
             "surface_lightposition": dict(x=120, y=160, z=150),
             "left_marker": "#2C7BE5",
@@ -210,7 +264,7 @@ def _style_config(visual_preset="cinematic", theme="dark"):
             "mesh_opacity": 0.2,
             "mesh_lighting": dict(ambient=0.55, diffuse=0.6, specular=0.25, roughness=0.62, fresnel=0.08),
             "mesh_lightposition": dict(x=120, y=130, z=110),
-            "surface_opacity": 0.95,
+            "surface_opacity": 0.38,
             "surface_lighting": dict(ambient=0.28, diffuse=0.88, specular=0.95, roughness=0.18, fresnel=0.22),
             "surface_lightposition": dict(x=140, y=180, z=170),
             "left_marker": "#4BD3FF",
@@ -237,7 +291,7 @@ def _style_config(visual_preset="cinematic", theme="dark"):
             "mesh_opacity": 0.18,
             "mesh_lighting": dict(ambient=0.42, diffuse=0.7, specular=0.42, roughness=0.42, fresnel=0.12),
             "mesh_lightposition": dict(x=150, y=180, z=140),
-            "surface_opacity": 0.97,
+            "surface_opacity": 0.34,
             "surface_lighting": dict(ambient=0.2, diffuse=0.95, specular=1.0, roughness=0.12, fresnel=0.28),
             "surface_lightposition": dict(x=170, y=220, z=190),
             "left_marker": "#56E0FF",
@@ -396,6 +450,15 @@ def build_visualization(
     gold_screws = _resolve_kicker(v2_gold_screws, gold_screws)
     threaded_screws = _resolve_kicker(v2_threaded_screws, threaded_screws)
     show_safety_planes = _resolve_kicker(v2_safety_planes, show_safety_planes)
+    eff_screw_mode = str(screw_mode).strip().lower()
+    if eff_screw_mode == "threaded" and not threaded_screws:
+        eff_screw_mode = "cylinder"
+    scene_ranges = _compute_scene_ranges(
+        verts_world,
+        results_list,
+        show_safety_planes=show_safety_planes,
+        fallback_diameter=fallback_diameter,
+    )
 
     fig = go.Figure()
     volume_name, timestamp = _volume_metadata(volume_path)
@@ -421,62 +484,92 @@ def build_visualization(
 
         diameter = _default_visual_diameter(result, fallback_diameter=fallback_diameter)
         if diameter > 0:
-            # Compute unit vector and orthogonal vectors for the screw
-            direction = tip - entry
-            mag = np.linalg.norm(direction)
-            if mag > 0:
-                v_unit = direction / mag
-            else:
-                v_unit = np.array([0., 0., 1.])
-
-            not_v = np.array([1, 0, 0]) if abs(v_unit[0]) < 0.8 else np.array([0, 1, 0])
-            n1 = np.cross(v_unit, not_v)
-            n1 = n1 / np.linalg.norm(n1)
-            n2 = np.cross(v_unit, n1)
-
-            t = np.linspace(0, 1, 60)
-            theta = np.linspace(0, 2*np.pi, 36)
-            t_grid, theta_grid = np.meshgrid(t, theta)
-
-            radius = diameter / 2.0
-
-            x = entry[0] + direction[0]*t_grid + radius*(np.cos(theta_grid)*n1[0] + np.sin(theta_grid)*n2[0])
-            y = entry[1] + direction[1]*t_grid + radius*(np.cos(theta_grid)*n1[1] + np.sin(theta_grid)*n2[1])
-            z = entry[2] + direction[2]*t_grid + radius*(np.cos(theta_grid)*n1[2] + np.sin(theta_grid)*n2[2])
-
-            screw_traces.append(
-                go.Surface(
-                    x=x, y=y, z=z,
-                    opacity=0.75,
-                    showscale=False,
-                    colorscale=[[0, '#39ff14'], [1, '#0aff9d']],
-                    lighting=dict(ambient=0.6, diffuse=0.8, specular=0.5, roughness=0.4),
-                    hovertemplate=hover_text,
-                    name=f"{result.get('side', '').strip()} Screw",
-                    legendgroup=side_style["legendgroup"],
-                    showlegend=False,
+            screw_geometry = _build_screw_geometry(entry, tip, diameter, screw_mode=eff_screw_mode)
+            if screw_geometry is not None:
+                outer_x, outer_y, outer_z = screw_geometry["outer_surface"]
+                entry_cap_x, entry_cap_y, entry_cap_z = screw_geometry["entry_cap"]
+                tip_cap_x, tip_cap_y, tip_cap_z = screw_geometry["tip_cap"]
+                screw_traces.extend(
+                    [
+                        go.Surface(
+                            x=outer_x,
+                            y=outer_y,
+                            z=outer_z,
+                            opacity=style["surface_opacity"],
+                            showscale=False,
+                            colorscale=[[0, '#39ff14'], [1, '#0aff9d']],
+                            lighting=dict(ambient=0.55, diffuse=0.82, specular=0.42, roughness=0.36),
+                            hovertemplate=hover_text,
+                            name=f"{result.get('side', '').strip()} Screw",
+                            legendgroup=side_style["legendgroup"],
+                            showlegend=False,
+                        ),
+                        go.Surface(
+                            x=entry_cap_x,
+                            y=entry_cap_y,
+                            z=entry_cap_z,
+                            opacity=max(style["surface_opacity"] - 0.04, 0.2),
+                            showscale=False,
+                            colorscale=[[0, side_style["surface_highlight"]], [1, side_style["surface_highlight"]]],
+                            lighting=dict(ambient=0.45, diffuse=0.72, specular=0.22, roughness=0.48),
+                            hovertemplate=hover_text,
+                            name=f"{result.get('side', '').strip()} Screw Entry Cap",
+                            legendgroup=side_style["legendgroup"],
+                            showlegend=False,
+                        ),
+                        go.Surface(
+                            x=tip_cap_x,
+                            y=tip_cap_y,
+                            z=tip_cap_z,
+                            opacity=max(style["surface_opacity"] - 0.04, 0.2),
+                            showscale=False,
+                            colorscale=[[0, side_style["surface_highlight"]], [1, side_style["surface_highlight"]]],
+                            lighting=dict(ambient=0.45, diffuse=0.72, specular=0.22, roughness=0.48),
+                            hovertemplate=hover_text,
+                            name=f"{result.get('side', '').strip()} Screw Tip Cap",
+                            legendgroup=side_style["legendgroup"],
+                            showlegend=False,
+                        ),
+                    ]
                 )
-            )
+
+                for rim_name, rim_width in (
+                    ("entry_rim", 5),
+                    ("tip_rim", 5),
+                ):
+                    rim_x, rim_y, rim_z = screw_geometry[rim_name]
+                    screw_traces.append(
+                        go.Scatter3d(
+                            x=rim_x,
+                            y=rim_y,
+                            z=rim_z,
+                            mode="lines",
+                            line=dict(color=side_style["surface_highlight"], width=rim_width),
+                            hovertemplate=hover_text,
+                            name=f"{result.get('side', '').strip()} Screw Rim",
+                            legendgroup=side_style["legendgroup"],
+                            showlegend=False,
+                        )
+                    )
 
             if show_safety_planes:
-                plane_size = 8
-                p_t = np.linspace(-plane_size, plane_size, 2)
-                p_s = np.linspace(-plane_size, plane_size, 2)
-                pt_grid, ps_grid = np.meshgrid(p_t, p_s)
-
-                plane_x = tip[0] + pt_grid*n1[0] + ps_grid*n2[0]
-                plane_y = tip[1] + pt_grid*n1[1] + ps_grid*n2[1]
-                plane_z = tip[2] + pt_grid*n1[2] + ps_grid*n2[2]
-
-                safety_plane_traces.append(
-                    go.Surface(
-                        x=plane_x, y=plane_y, z=plane_z,
-                        opacity=0.35,
-                        showscale=False,
-                        colorscale=[[0, '#ff2a6d'], [1, '#ff2a6d']],
-                        name="80% Safety Limit"
+                plane_surface = _build_safety_plane(tip, direction, plane_size=8.0)
+                if plane_surface is not None:
+                    plane_x, plane_y, plane_z = plane_surface
+                    safety_plane_traces.append(
+                        go.Surface(
+                            x=plane_x,
+                            y=plane_y,
+                            z=plane_z,
+                            opacity=0.35,
+                            showscale=False,
+                            colorscale=[[0, '#ff2a6d'], [1, '#ff2a6d']],
+                            hovertemplate="80% Safety Limit<extra></extra>",
+                            name="80% Safety Limit",
+                            legendgroup=side_style["legendgroup"],
+                            showlegend=False,
+                        )
                     )
-                )
 
         trajectory_traces.append(
             go.Scatter3d(
@@ -555,66 +648,69 @@ def build_visualization(
     n_entry = len(entry_marker_traces)
     n_tip = len(tip_marker_traces)
     n_safety = len(safety_plane_traces)
-    fat_screws_vis = (
-        [True] * n_mesh
-        + [show_bounding_box] * n_bbox
-        + [True] * n_screws
-        + [False] * n_traj
-        + [show_entry_markers] * n_entry
-        + [show_tip_markers] * n_tip
-        + [show_safety_planes] * n_safety
-    )
-    thin_traj_vis = (
-        [True] * n_mesh
-        + [show_bounding_box] * n_bbox
-        + [False] * n_screws
-        + [show_trajectory_lines] * n_traj
-        + [show_entry_markers] * n_entry
-        + [show_tip_markers] * n_tip
-        + [show_safety_planes] * n_safety
-    )
-    bbox_on_vis = [True] + [True] * n_bbox + [_is_trace_visible(trace) for trace in fig.data[(n_mesh + n_bbox):]]
-    bbox_off_vis = [True] + [False] * n_bbox + [_is_trace_visible(trace) for trace in fig.data[(n_mesh + n_bbox):]]
+    trace_cursor = n_mesh
+    bbox_indices = list(range(trace_cursor, trace_cursor + n_bbox))
+    trace_cursor += n_bbox
+    screw_indices = list(range(trace_cursor, trace_cursor + n_screws))
+    trace_cursor += n_screws
+    trajectory_indices = list(range(trace_cursor, trace_cursor + n_traj))
+    screw_mode_indices = screw_indices + trajectory_indices
+    screw_mode_screws_vis = [True] * n_screws + [False] * n_traj
+    screw_mode_traj_vis = [False] * n_screws + [True] * n_traj
+    button_bgcolor = "#4C6382" if style["template"] == "plotly_dark" else "#D9E4F2"
+    button_border = "rgba(255,255,255,0.2)" if style["template"] == "plotly_dark" else "rgba(21,32,51,0.18)"
+    button_font = dict(color=style["title_font_color"], size=15)
+    slider_panel_fill = "rgba(8, 14, 24, 0.86)" if style["template"] == "plotly_dark" else "rgba(255, 255, 255, 0.88)"
     updatemenus = [
         dict(
             type="buttons",
             direction="right",
-            showactive=True,
+            showactive=False,
             x=0.01,
-            y=1.05,
+            y=1.065,
             xanchor="left",
             yanchor="top",
+            pad=dict(r=10, t=8),
+            bgcolor=button_bgcolor,
+            bordercolor=button_border,
+            borderwidth=1,
+            font=button_font,
             buttons=[
                 dict(
-                    label="Show Screws",
-                    method="update",
-                    args=[{"visible": fat_screws_vis}],
+                    label="Show Max Diameter",
+                    method="restyle",
+                    args=[{"visible": screw_mode_screws_vis}, screw_mode_indices],
                 ),
                 dict(
                     label="Show Trajectories",
-                    method="update",
-                    args=[{"visible": thin_traj_vis}],
+                    method="restyle",
+                    args=[{"visible": screw_mode_traj_vis}, screw_mode_indices],
                 ),
             ],
         ),
         dict(
             type="buttons",
             direction="right",
-            showactive=True,
+            showactive=False,
             x=0.35,
-            y=1.05,
+            y=1.065,
             xanchor="left",
             yanchor="top",
+            pad=dict(r=10, t=8),
+            bgcolor=button_bgcolor,
+            bordercolor=button_border,
+            borderwidth=1,
+            font=button_font,
             buttons=[
                 dict(
                     label="Show Bounding Box",
-                    method="update",
-                    args=[{"visible": bbox_on_vis}],
+                    method="restyle",
+                    args=[{"visible": [True] * n_bbox}, bbox_indices],
                 ),
                 dict(
                     label="Hide Bounding Box",
-                    method="update",
-                    args=[{"visible": bbox_off_vis}],
+                    method="restyle",
+                    args=[{"visible": [False] * n_bbox}, bbox_indices],
                 ),
             ],
         ),
@@ -622,11 +718,18 @@ def build_visualization(
 
     mesh_opacities = [round(value, 2) for value in np.linspace(0.05, 1.0, 20)]
     fig.update_layout(
-        title=f"Pedicle Screw Planner Visualization - {volume_name}",
+        title=dict(
+            text=f"Pedicle Screw Planner Visualization - {volume_name}",
+            x=0.05,
+            xanchor="left",
+            y=0.995,
+            yanchor="top",
+            pad=dict(t=12, b=24),
+            font=dict(size=18, color=style["title_font_color"]),
+        ),
         template=style["template"],
         paper_bgcolor=style["paper_bgcolor"],
         plot_bgcolor=style["plot_bgcolor"],
-        title_font=dict(size=20, color=style["title_font_color"]),
         scene=dict(
             aspectmode="data",
             bgcolor=style["scene_bgcolor"],
@@ -635,32 +738,47 @@ def build_visualization(
                 visible=style["show_axes"],
                 showgrid=style["show_grid"],
                 zeroline=False,
+                range=scene_ranges[0],
             ),
             yaxis=dict(
                 showbackground=style["show_axes"],
                 visible=style["show_axes"],
                 showgrid=style["show_grid"],
                 zeroline=False,
+                range=scene_ranges[1],
             ),
             zaxis=dict(
                 showbackground=style["show_axes"],
                 visible=style["show_axes"],
                 showgrid=style["show_grid"],
                 zeroline=False,
+                range=scene_ranges[2],
             ),
             camera=dict(eye=style["camera_eye"]),
         ),
-        height=780,
-        margin=dict(l=0, r=0, t=60, b=20),
+        height=760,
+        margin=dict(l=0, r=0, t=120, b=54),
         updatemenus=updatemenus,
         sliders=[
             dict(
                 active=4,
-                currentvalue={"prefix": "Mesh Opacity: "},
-                pad={"t": 10, "b": 0},
-                x=0.1,
-                y=-0.05,
-                len=0.8,
+                activebgcolor=button_bgcolor,
+                currentvalue={
+                    "prefix": "Mesh Opacity: ",
+                    "font": {"color": style["title_font_color"], "size": 13},
+                    "visible": True,
+                    "xanchor": "right",
+                },
+                bgcolor="rgba(76, 99, 130, 0.16)" if style["template"] == "plotly_dark" else "rgba(217, 228, 242, 0.72)",
+                bordercolor=button_border,
+                borderwidth=1,
+                pad={"t": 0, "b": 0},
+                x=0.63,
+                y=0.035,
+                len=0.33,
+                tickcolor=style["title_font_color"],
+                ticklen=6,
+                tickwidth=1.2,
                 steps=[
                     dict(
                         method="restyle",
@@ -676,23 +794,23 @@ def build_visualization(
             font=dict(color=style["title_font_color"]),
             orientation="h",
             yanchor="bottom",
-            y=0.02,
+            y=0.03,
             xanchor="left",
             x=0.02,
         ),
+        uirevision="unified-visualizer",
     )
-    fig.add_annotation(
-        x=0.99,
-        y=0.98,
+    fig.add_shape(
+        type="rect",
         xref="paper",
         yref="paper",
-        xanchor="right",
-        yanchor="top",
-        showarrow=False,
-        text=f"{visual_preset.title()} View",
-        font=dict(size=11, color=style["title_font_color"]),
-        bgcolor="rgba(0,0,0,0.18)" if style["template"] == "plotly_dark" else "rgba(255,255,255,0.76)",
-        borderpad=6,
+        x0=0.60,
+        y0=0.0,
+        x1=0.98,
+        y1=0.11,
+        line=dict(color=button_border, width=1),
+        fillcolor=slider_panel_fill,
+        layer="below",
     )
     return fig
 
@@ -710,8 +828,56 @@ def _build_qt_window(fig, window_title):
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWidgets import QApplication, QFileDialog, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
+    paper_bg = getattr(fig.layout, "paper_bgcolor", None) or "#0B1320"
+    html_document = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    html, body {{
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: {paper_bg};
+    }}
+    body {{
+      font-family: Segoe UI, sans-serif;
+    }}
+    .plotly-graph-div {{
+      width: 100% !important;
+      height: 100% !important;
+    }}
+    .modebar-btn,
+    g.updatemenu-button,
+    g.updatemenu-button *,
+    g.slider *,
+    .legendtoggle {{
+      cursor: pointer !important;
+    }}
+  </style>
+</head>
+<body>
+{fig.to_html(full_html=False, include_plotlyjs=True, default_width="100%", default_height="100%")}
+<script>
+  document.addEventListener('DOMContentLoaded', function () {{
+    function applyPointerCursor() {{
+      document.querySelectorAll('.modebar-btn, g.updatemenu-button, g.updatemenu-button *, g.slider *, .legendtoggle').forEach(function (el) {{
+        el.style.cursor = 'pointer';
+      }});
+    }}
+    applyPointerCursor();
+    setTimeout(applyPointerCursor, 300);
+    setTimeout(applyPointerCursor, 900);
+  }});
+</script>
+</body>
+</html>
+"""
+
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
-        fig.write_html(tmpfile.name)
+        tmpfile.write(html_document.encode("utf-8"))
         html_path = tmpfile.name
 
     app = QApplication.instance()
@@ -724,6 +890,9 @@ def _build_qt_window(fig, window_title):
 
     container = QWidget()
     layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    container.setStyleSheet(f"background-color: {paper_bg};")
 
     view = QWebEngineView()
     view.load(QUrl.fromLocalFile(html_path))

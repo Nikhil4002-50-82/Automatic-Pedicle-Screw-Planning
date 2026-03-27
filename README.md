@@ -323,3 +323,22 @@ project/
 * Results depend on segmentation quality
 * CT scans must include lumbar vertebrae
 * If TotalSegmentator fails with **CUDA out of memory**, force CPU mode via `PEDICLE_TOTALSEG_DEVICE=cpu` (Windows: `set PEDICLE_TOTALSEG_DEVICE=cpu`, Linux/Mac: `export PEDICLE_TOTALSEG_DEVICE=cpu`)
+
+## CT Viewer
+
+The repo now includes a focused desktop viewer for quickly inspecting CT volumes and segmentation masks without going through a larger platform UI.
+
+Run it with:
+
+```bash
+python app/ct_mask_viewer.py
+```
+
+Current viewer features:
+
+* Load a CT volume in NIfTI format
+* Load one or more mask files, or load a whole folder of masks
+* View synchronized axial, coronal, and sagittal slices
+* Adjust CT window center and width with presets or manual sliders
+* Toggle masks on and off and control overlay opacity
+* Click in any slice to jump the crosshair and use the mouse wheel to scroll slices

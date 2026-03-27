@@ -120,9 +120,10 @@ def build_visualizer_adapter(args):
             fallback_diameter=args.fallback_diameter,
         )
 
-        def wrapped_show_figure(fig_obj=None):
+        def wrapped_show_figure(fig_obj=None, renderer=None):
             target_fig = fig if fig_obj is None else fig_obj
-            return show_figure(target_fig, renderer=args.renderer)
+            target_renderer = args.renderer if renderer is None else renderer
+            return show_figure(target_fig, renderer=target_renderer)
 
         return fig, wrapped_show_figure
 

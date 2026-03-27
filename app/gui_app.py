@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import subprocess
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QFileDialog,
@@ -132,6 +133,11 @@ class GUI(QWidget):
 
         layout.addWidget(self.visualBtn)
 
+        self.ctViewerBtn = QPushButton("Open CT Viewer")
+        self.ctViewerBtn.clicked.connect(self.launchCTViewer)
+
+        layout.addWidget(self.ctViewerBtn)
+
         # ---------- LOG BOX ----------
 
         self.logBox = QTextEdit()
@@ -253,6 +259,25 @@ class GUI(QWidget):
                 self.faces,
                 self.results
             )
+
+
+    def launchCTViewer(self):
+
+        viewer_path = os.path.join(os.path.dirname(__file__), "ct_mask_viewer.py")
+
+        if not os.path.exists(viewer_path):
+
+            print("CT viewer file not found:", viewer_path)
+            return
+
+        try:
+
+            subprocess.Popen([sys.executable, viewer_path])
+            print("Launched CT viewer:", viewer_path)
+
+        except Exception as exc:
+
+            print("Failed to launch CT viewer:", exc)
 
 
 # ---------- MAIN ----------

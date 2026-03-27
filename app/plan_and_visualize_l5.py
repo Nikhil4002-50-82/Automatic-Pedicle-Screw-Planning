@@ -161,6 +161,13 @@ def build_mesh_from_single_vertebra(segmented_file=None, data=None, affine=None,
     return vertsWorld, faces
 
 
+def _select_l5_segment(valid_segments):
+    for label_val, mask in valid_segments:
+        if labelMap.get(label_val, str(label_val)) == "L5":
+            return label_val, mask
+    return None, None
+
+
 def measure_pedicle_dimensions(center, axes, dist, mask, affine):
     """
     Estimate pedicle width (mediolateral) and height (craniocaudal) at
@@ -341,22 +348,30 @@ def plan_and_visualize_l5():
         )
         sys.exit(1)
 
-    # Use the first (and usually only) segment
-    labelVal, mask = validSegments[0]
+    labelVal, mask = _select_l5_segment(validSegments)
+    if mask is None:
+        found_levels = [labelMap.get(value, str(value)) for value, _ in validSegments]
+        print(
+            "[Runner] ERROR: No L5 segment was found in the loaded segmentation. "
+            f"Available levels: {', '.join(found_levels)}"
+        )
+        sys.exit(1)
     name = labelMap.get(labelVal, str(labelVal))
     print(f"[Runner] Found segment: label={labelVal} → {name}")
 
-    # --- Build mesh for visualization from the validated component ---
+    # Keep the rendered anatomy aligned with the loaded mask, even when the
+    # planning algorithm is restricted to the L5 component.
     try:
         vertsWorld, faces = build_mesh_from_single_vertebra(
             segmented_file=segmented_file,
-            data=mask,
-            affine=affine,
-            mask_name=name,
+            mask_name="loaded segmentation",
         )
     except ValueError as exc:
         print(f"[Runner] ERROR: {exc}")
         sys.exit(1)
+
+    if len(validSegments) > 1:
+        print("[Runner] Visualization uses the full loaded mask; planning remains restricted to L5.")
 
     # --- Compute robust L5 anatomical frame ---
     from analytical_geometry import computeStableFrameL5
