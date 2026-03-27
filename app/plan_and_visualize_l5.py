@@ -126,7 +126,7 @@ from analytical_geometry import (
 )
 
 
-def build_mesh_from_single_vertebra(segmented_file):
+def build_mesh_from_single_vertebra(segmented_file=None, data=None, affine=None, mask_name="vertebra"):
     """
     Build a mesh from a single vertebra .nii file (same as
     plan_and_visualize_geometry.py — duplicated here to stay self-contained
@@ -135,13 +135,27 @@ def build_mesh_from_single_vertebra(segmented_file):
     import nibabel as nib
     from skimage.measure import marching_cubes
 
-    print(f"[Mesh] Loading segmentation: {segmented_file}")
-    nii = nib.load(segmented_file)
-    data = nii.get_fdata()
-    affine = nii.affine
-    print(f"[Mesh] Volume shape: {data.shape}, voxel count: {int(np.sum(data > 0))}")
+    if data is None:
+        if segmented_file is None:
+            raise ValueError("Either segmented_file or data/affine must be provided.")
+        print(f"[Mesh] Loading segmentation: {segmented_file}")
+        nii = nib.load(segmented_file)
+        data = nii.get_fdata()
+        affine = nii.affine
 
-    verts, faces, _, _ = marching_cubes(data, level=0.5)
+    if affine is None:
+        raise ValueError("Affine is required when mesh data is provided directly.")
+
+    binary_mask = np.asarray(data) > 0
+    voxel_count = int(np.count_nonzero(binary_mask))
+    print(f"[Mesh] Volume shape: {binary_mask.shape}, voxel count: {voxel_count}")
+
+    if voxel_count == 0:
+        raise ValueError(
+            f"[Mesh] Cannot build a mesh for {mask_name}: the segmentation mask is empty."
+        )
+
+    verts, faces, _, _ = marching_cubes(binary_mask.astype(np.uint8), level=0.5)
     vertsWorld = nib.affines.apply_affine(affine, verts)
     print(f"[Mesh] Mesh built: {len(verts)} vertices, {len(faces)} faces")
     return vertsWorld, faces
@@ -314,22 +328,35 @@ def plan_and_visualize_l5():
         print(f"[Runner] ERROR: segmented file does not exist: {segmented_file}")
         sys.exit(1)
 
-    # --- Build mesh for visualization ---
-    vertsWorld, faces = build_mesh_from_single_vertebra(segmented_file)
-
     # --- Load segmentation for anatomical analysis ---
     print("[Runner] Loading segmentation for pedicle localization...")
     seg, spacing, affine = loadNifti(segmented_file)
     validSegments = getValidLabels(seg)
 
     if len(validSegments) == 0:
-        print("[Runner] ERROR: No valid vertebra segments found!")
+        nonzero_voxels = int(np.count_nonzero(seg))
+        print(
+            "[Runner] ERROR: No valid vertebra segments found in the segmentation "
+            f"(non-zero voxels: {nonzero_voxels})."
+        )
         sys.exit(1)
 
     # Use the first (and usually only) segment
     labelVal, mask = validSegments[0]
     name = labelMap.get(labelVal, str(labelVal))
     print(f"[Runner] Found segment: label={labelVal} → {name}")
+
+    # --- Build mesh for visualization from the validated component ---
+    try:
+        vertsWorld, faces = build_mesh_from_single_vertebra(
+            segmented_file=segmented_file,
+            data=mask,
+            affine=affine,
+            mask_name=name,
+        )
+    except ValueError as exc:
+        print(f"[Runner] ERROR: {exc}")
+        sys.exit(1)
 
     # --- Compute robust L5 anatomical frame ---
     from analytical_geometry import computeStableFrameL5
@@ -454,7 +481,9 @@ def plan_and_visualize_l5():
             "vertebra": "L5",
             "side": side.capitalize(),
             "entry": best_entry,
-            "tip": tip
+            "tip": tip,
+            "diameter": screw_diam,
+            "length": screw_length,
         })
         
         print(f"[Runner] {side.capitalize()} Entry: {np.round(best_entry, 2)}")
