@@ -108,14 +108,14 @@ class GUI(QWidget):
         sys.stderr = self.stream
 
     def initUI(self):
-        self.setWindowTitle("Pedicle Screw Planning System Pro - V2.0")
+        self.setWindowTitle("Automatic Pedicle Screw Planning System - V3.0")
         self.setGeometry(100, 100, 1200, 800)
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        title = QLabel("GEOMETRY BASED PEDICLE SCREW PLANNING SYSTEM")
+        title = QLabel("AUTOMATIC PEDICLE SCREW PLANNING SYSTEM")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
         # Qt.AlignCenter -> Qt.AlignmentFlag.AlignCenter
         title.setAlignment(Qt.AlignmentFlag.AlignCenter) 

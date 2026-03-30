@@ -109,7 +109,7 @@ class GUI(QWidget):
         sys.stderr = self.stream
 
     def initUI(self):
-        self.setWindowTitle("Pedicle Screw Planning System Pro - V2.0")
+        self.setWindowTitle("Automatic Pedicle Screw Planning System - V2.0")
         self.setGeometry(100, 100, 1200, 800)
 
         main_layout = QVBoxLayout()
