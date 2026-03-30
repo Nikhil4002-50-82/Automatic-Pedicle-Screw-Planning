@@ -5,4 +5,4 @@ scikit-learn
 scikit-image
 plotly
 PyQt6
-PyQtWebEngine
+PyQt6-WebEngine
