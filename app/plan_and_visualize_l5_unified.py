@@ -1,9 +1,6 @@
 import argparse
 import time
 
-import plan_and_visualize_l5 as l5_runner
-from visualizer_unified import visualize_surgical_plan as unified_visualize
-
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -97,7 +94,7 @@ def build_parser():
     return parser
 
 
-def build_visualizer_adapter(args):
+def build_visualizer_adapter(args, unified_visualize):
     def patched_visualizer(verts_world, faces, results_list, volume_path=None):
         fig, show_figure = unified_visualize(
             verts_world,
@@ -131,8 +128,18 @@ def build_visualizer_adapter(args):
 
 
 def main():
+    # Lazy-load heavy modules only when main() is called
+    import sys
+    import os
+    
+    # Add parent directory to path for relative imports
+    sys.path.insert(0, os.path.dirname(__file__))
+    
+    import plan_and_visualize_l5 as l5_runner
+    from visualizer_unified import visualize_surgical_plan as unified_visualize
+    
     args = build_parser().parse_args()
-    l5_runner.visualize_surgical_plan = build_visualizer_adapter(args)
+    l5_runner.visualize_surgical_plan = build_visualizer_adapter(args, unified_visualize)
     l5_runner.start_time = time.time()
     l5_runner.plan_and_visualize_l5()
 

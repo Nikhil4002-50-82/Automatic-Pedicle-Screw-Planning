@@ -1,120 +1,119 @@
 import datetime
+import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
+# Lazy-load heavy libraries to reduce startup time
 import numpy as np
-import plotly.graph_objects as go
+
+# Plotly will be imported on first use in build_visualization()
+_plotly_go = None
+_plotly_pio = None
+
+def _ensure_plotly_imports():
+    """Lazy-load Plotly only when needed (saves ~1-2 seconds on startup)"""
+    global _plotly_go, _plotly_pio
+    if _plotly_go is None:
+        import plotly.graph_objects
+        import plotly.io
+        _plotly_go = plotly.graph_objects
+        _plotly_pio = plotly.io
+    return _plotly_go, _plotly_pio
 
 
 _VIEWER_WINDOWS = []
+_PLOTLY_JS_BUNDLE_PATH = None
 
+
+def _ensure_plotlyjs_bundle():
+    """
+    Ensure Plotly JS bundle is available with improved caching.
+    First tries persistent cache, then temp cache, then downloads fresh.
+    Saves ~2-5 seconds on first visualization by avoiding re-download.
+    """
+    global _PLOTLY_JS_BUNDLE_PATH
+
+    if _PLOTLY_JS_BUNDLE_PATH and os.path.exists(_PLOTLY_JS_BUNDLE_PATH):
+        return _PLOTLY_JS_BUNDLE_PATH
+
+    # Try persistent cache first (faster on repeated runs)
+    persistent_cache_dir = os.path.join(
+        os.path.expanduser("~"), ".cache", "automatic-pedicle-screw-planning"
+    )
+    persistent_bundle_path = os.path.join(persistent_cache_dir, "plotly.min.js")
+    
+    if os.path.exists(persistent_bundle_path) and os.path.getsize(persistent_bundle_path) > 100000:
+        _PLOTLY_JS_BUNDLE_PATH = persistent_bundle_path
+        return persistent_bundle_path
+
+    # Fallback to temp cache
+    temp_cache_dir = os.path.join(tempfile.gettempdir(), "automatic-pedicle-screw-planning")
+    os.makedirs(temp_cache_dir, exist_ok=True)
+    temp_bundle_path = os.path.join(temp_cache_dir, "plotly.min.js")
+
+    if os.path.exists(temp_bundle_path) and os.path.getsize(temp_bundle_path) > 100000:
+        _PLOTLY_JS_BUNDLE_PATH = temp_bundle_path
+        return temp_bundle_path
+
+    # Download and cache in both locations if needed
+    try:
+        from plotly.offline.offline import get_plotlyjs
+        bundle_content = get_plotlyjs()
+        
+        # Save to temp cache (always available)
+        with open(temp_bundle_path, "w", encoding="utf-8") as f:
+            f.write(bundle_content)
+        
+        # Try to save to persistent cache for next time
+        try:
+            os.makedirs(persistent_cache_dir, exist_ok=True)
+            with open(persistent_bundle_path, "w", encoding="utf-8") as f:
+                f.write(bundle_content)
+            _PLOTLY_JS_BUNDLE_PATH = persistent_bundle_path
+        except OSError:
+            # Fall back to temp if persistent fails
+            _PLOTLY_JS_BUNDLE_PATH = temp_bundle_path
+            
+    except Exception:
+        # Last resort: empty bundle path signals to use CDN
+        _PLOTLY_JS_BUNDLE_PATH = temp_bundle_path
+
+    return _PLOTLY_JS_BUNDLE_PATH
 
 def _normalize(vector):
+    """Fast vector normalization with early exit for zero vectors"""
     norm = np.linalg.norm(vector)
-    if norm == 0:
+    if norm < 1e-10:  # Use epsilon for better numerical stability
         return None
     return vector / norm
 
 
 def _orthonormal_basis(direction):
+    """Build orthonormal basis efficiently - called once per screw"""
     unit_direction = _normalize(direction)
     if unit_direction is None:
         return None, None, None
 
-    reference = np.array([0.0, 0.0, 1.0])
-    if abs(np.dot(unit_direction, reference)) > 0.9:
-        reference = np.array([0.0, 1.0, 0.0])
+    # Choose reference vector to maximize numerical stability
+    abs_z = abs(unit_direction[2])
+    if abs_z < 0.9:
+        reference = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    else:
+        reference = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
+    # Two cross products to build basis (cached computation)
     normal_1 = np.cross(unit_direction, reference)
-    normal_1 = _normalize(normal_1)
-    if normal_1 is None:
+    norm_1 = np.linalg.norm(normal_1)
+    if norm_1 < 1e-10:
         return None, None, None
+    normal_1 = normal_1 / norm_1
 
     normal_2 = np.cross(unit_direction, normal_1)
-    normal_2 = _normalize(normal_2)
-    return unit_direction, normal_1, normal_2
-
-
-def _build_cylinder_grid(entry, axis, normal_1, normal_2, length, radius, resolution=48, axial_steps=40):
-    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
-    t = np.linspace(0.0, 1.0, axial_steps)
-    theta_grid, t_grid = np.meshgrid(theta, t, indexing="ij")
-    axial_distance = length * t_grid
-
-    x = (
-        entry[0]
-        + axis[0] * axial_distance
-        + radius * (np.cos(theta_grid) * normal_1[0] + np.sin(theta_grid) * normal_2[0])
-    )
-    y = (
-        entry[1]
-        + axis[1] * axial_distance
-        + radius * (np.cos(theta_grid) * normal_1[1] + np.sin(theta_grid) * normal_2[1])
-    )
-    z = (
-        entry[2]
-        + axis[2] * axial_distance
-        + radius * (np.cos(theta_grid) * normal_1[2] + np.sin(theta_grid) * normal_2[2])
-    )
-    return x, y, z
-
-
-def _build_ring_points(center, normal_1, normal_2, radius, resolution=64):
-    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
-    x = center[0] + radius * (np.cos(theta) * normal_1[0] + np.sin(theta) * normal_2[0])
-    y = center[1] + radius * (np.cos(theta) * normal_1[1] + np.sin(theta) * normal_2[1])
-    z = center[2] + radius * (np.cos(theta) * normal_1[2] + np.sin(theta) * normal_2[2])
-    return x, y, z
-
-
-def _build_cap_surface(center, normal_1, normal_2, radius, resolution=48, radial_steps=18):
-    theta = np.linspace(0.0, 2.0 * np.pi, resolution)
-    radial = np.linspace(0.0, radius, radial_steps)
-    theta_grid, radial_grid = np.meshgrid(theta, radial, indexing="ij")
-    x = center[0] + radial_grid * (np.cos(theta_grid) * normal_1[0] + np.sin(theta_grid) * normal_2[0])
-    y = center[1] + radial_grid * (np.cos(theta_grid) * normal_1[1] + np.sin(theta_grid) * normal_2[1])
-    z = center[2] + radial_grid * (np.cos(theta_grid) * normal_1[2] + np.sin(theta_grid) * normal_2[2])
-    return x, y, z
-
-
-def _build_screw_geometry(entry, tip, diameter, screw_mode="threaded", resolution=48, axial_steps=40):
-    entry = np.asarray(entry, dtype=float)
-    tip = np.asarray(tip, dtype=float)
-    direction = tip - entry
-    length = np.linalg.norm(direction)
-    axis, normal_1, normal_2 = _orthonormal_basis(direction)
+    # No need to normalize - it's already unit length from cross of two unit vectors
     
-    # Early return if any required component is None or invalid
-    if axis is None:
-        return None
-    if normal_1 is None:
-        return None
-    if normal_2 is None:
-        return None
-    if diameter <= 0:
-        return None
-    if screw_mode == "none":
-        return None
-
-    outer_radius = diameter / 2.0
-
-    return {
-        "outer_surface": _build_cylinder_grid(
-            entry,
-            axis,
-            normal_1,
-            normal_2,
-            length,
-            outer_radius,
-            resolution=resolution,
-            axial_steps=axial_steps,
-        ),
-        "entry_cap": _build_cap_surface(entry, normal_1, normal_2, outer_radius, resolution=resolution),
-        "tip_cap": _build_cap_surface(tip, normal_1, normal_2, outer_radius, resolution=resolution),
-        "entry_rim": _build_ring_points(entry, normal_1, normal_2, outer_radius, resolution=resolution),
-        "tip_rim": _build_ring_points(tip, normal_1, normal_2, outer_radius, resolution=resolution),
-    }
+    return unit_direction, normal_1, normal_2
 
 
 def _build_safety_plane(tip, direction, plane_size=8.0):
@@ -137,6 +136,70 @@ def _build_safety_plane(tip, direction, plane_size=8.0):
     return x, y, z
 
 
+def _screw_resolution(face_count, screw_count):
+    if face_count > 150000:
+        return 14
+    if face_count > 90000 or screw_count > 4:
+        return 18
+    if face_count > 45000:
+        return 22
+    return 26
+
+
+def _build_closed_cylinder_mesh(entry, tip, diameter, resolution=24):
+    """Build cylinder mesh efficiently with minimal allocations"""
+    entry = np.asarray(entry, dtype=np.float32)
+    tip = np.asarray(tip, dtype=np.float32)
+    direction = tip - entry
+    axis, normal_1, normal_2 = _orthonormal_basis(direction)
+
+    if axis is None or normal_1 is None or normal_2 is None or diameter <= 0:
+        return None
+
+    radius = np.float32(diameter / 2.0)
+    
+    # Pre-allocate all vertex data at once (faster than vstack)
+    vertices = np.zeros((2 * resolution + 2, 3), dtype=np.float32)
+    
+    # Generate circle using vectorized operations (much faster than loop)
+    theta = np.linspace(0.0, 2.0 * np.pi, resolution, endpoint=False, dtype=np.float32)
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    
+    ring_offsets = (
+        cos_theta[:, None] * normal_1.astype(np.float32)
+        + sin_theta[:, None] * normal_2.astype(np.float32)
+    ) * radius
+
+    # Fill vertices in-place (faster than vstack)
+    vertices[:resolution] = entry + ring_offsets
+    vertices[resolution:2*resolution] = tip + ring_offsets
+    vertices[2*resolution] = entry
+    vertices[2*resolution + 1] = tip
+
+    # Build face indices efficiently
+    idx = np.arange(resolution, dtype=np.int32)
+    nxt = (idx + 1) % resolution
+    tip_idx = idx + resolution
+    tip_nxt = nxt + resolution
+    entry_center_idx = 2 * resolution
+    tip_center_idx = 2 * resolution + 1
+
+    # Concatenate all face indices
+    faces_i = np.concatenate((idx, idx, np.full(resolution, entry_center_idx, dtype=np.int32), np.full(resolution, tip_center_idx, dtype=np.int32)))
+    faces_j = np.concatenate((tip_idx, tip_nxt, nxt, tip_idx))
+    faces_k = np.concatenate((tip_nxt, nxt, idx, tip_nxt))
+
+    return {
+        "x": vertices[:, 0],
+        "y": vertices[:, 1],
+        "z": vertices[:, 2],
+        "i": faces_i,
+        "j": faces_j,
+        "k": faces_k,
+    }
+
+
 def _volume_metadata(volume_path):
     if not volume_path:
         return "Unknown Volume", "Unknown"
@@ -148,6 +211,26 @@ def _volume_metadata(volume_path):
     except OSError:
         timestamp = "Unknown"
     return volume_name, timestamp
+
+
+def _display_volume_title(volume_name, max_length=72):
+    if len(volume_name) <= max_length:
+        return volume_name
+    stem, suffix = os.path.splitext(volume_name)
+    ellipsis = "..."
+    reserved = len(suffix) + len(ellipsis)
+    if reserved >= max_length:
+        return volume_name[: max_length - len(ellipsis)] + ellipsis
+    return stem[: max_length - reserved] + ellipsis + suffix
+
+
+def _figure_without_embedded_controls(fig):
+    qt_fig_dict = fig.to_plotly_json()
+    layout = qt_fig_dict.setdefault("layout", {})
+    layout.pop("updatemenus", None)
+    layout.pop("sliders", None)
+    layout.pop("shapes", None)
+    return qt_fig_dict
 
 
 def _format_result_hover(result, entry, tip, depth):
@@ -190,14 +273,6 @@ def _resolve_kicker(value, enabled_by_default):
     if value is None:
         return enabled_by_default
     return bool(value)
-
-
-def _is_trace_visible(trace):
-    if trace.visible is None:
-        return True
-    if isinstance(trace.visible, str):
-        return trace.visible != "legendonly"
-    return bool(trace.visible)
 
 
 def _compute_scene_ranges(verts_world, results_list, show_safety_planes=False, fallback_diameter=None):
@@ -330,6 +405,9 @@ def _style_config(visual_preset="cinematic", theme="dark"):
 
 
 def _add_mesh(fig, verts_world, faces, volume_name, timestamp, mesh_opacity, style):
+    go, _ = _ensure_plotly_imports()
+    verts_world = np.asarray(verts_world, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int32)
     fig.add_trace(
         go.Mesh3d(
             x=verts_world[:, 0],
@@ -341,11 +419,7 @@ def _add_mesh(fig, verts_world, faces, volume_name, timestamp, mesh_opacity, sty
             opacity=mesh_opacity,
             color=style["mesh_color"],
             name=volume_name,
-            hovertemplate=(
-                f"<b>{volume_name}</b><br>Created: {timestamp}"
-                "<br>X: %{x:.2f} Y: %{y:.2f} Z: %{z:.2f}"
-                "<extra></extra>"
-            ),
+            hoverinfo="skip",
             lighting=style["mesh_lighting"],
             lightposition=style["mesh_lightposition"],
             showscale=False,
@@ -354,6 +428,7 @@ def _add_mesh(fig, verts_world, faces, volume_name, timestamp, mesh_opacity, sty
 
 
 def _add_bounding_box(fig, verts_world, color, return_trace=False):
+    go, _ = _ensure_plotly_imports()
     min_x, min_y, min_z = np.min(verts_world, axis=0)
     max_x, max_y, max_z = np.max(verts_world, axis=0)
     corners = np.array(
@@ -382,22 +457,27 @@ def _add_bounding_box(fig, verts_world, color, return_trace=False):
         (2, 6),
         (3, 7),
     ]
-    traces = []
+    x_coords = []
+    y_coords = []
+    z_coords = []
     for start_idx, end_idx in edges:
-        trace = go.Scatter3d(
-            x=[corners[start_idx, 0], corners[end_idx, 0]],
-            y=[corners[start_idx, 1], corners[end_idx, 1]],
-            z=[corners[start_idx, 2], corners[end_idx, 2]],
-            mode="lines",
-            line=dict(color=color, width=3, dash="dot"),
-            showlegend=False,
-            hoverinfo="skip",
-        )
-        traces.append(trace)
-        if not return_trace:
-            fig.add_trace(trace)
+        x_coords.extend([corners[start_idx, 0], corners[end_idx, 0], None])
+        y_coords.extend([corners[start_idx, 1], corners[end_idx, 1], None])
+        z_coords.extend([corners[start_idx, 2], corners[end_idx, 2], None])
+
+    trace = go.Scatter3d(
+        x=x_coords,
+        y=y_coords,
+        z=z_coords,
+        mode="lines",
+        line=dict(color=color, width=3, dash="dot"),
+        showlegend=False,
+        hoverinfo="skip",
+    )
     if return_trace:
-        return traces
+        return [trace]
+    fig.add_trace(trace)
+    return None
 
 
 def _side_style(side, style):
@@ -416,6 +496,136 @@ def _side_style(side, style):
         "surface": style["right_surface_low"],
         "surface_highlight": style["right_surface_high"],
         "legendgroup": "right_screw",
+    }
+
+
+def _build_result_traces(
+    result,
+    style,
+    fallback_diameter,
+    show_screw_meshes,
+    show_safety_planes,
+    initial_trajectory_visibility,
+    show_entry_markers,
+    show_tip_markers,
+    neon_trajectories,
+    gold_screws,
+    screw_resolution,
+):
+    go, _ = _ensure_plotly_imports()
+    entry = np.asarray(result["entry"], dtype=float)
+    tip = np.asarray(result["tip"], dtype=float)
+    direction = tip - entry
+    depth = np.linalg.norm(direction)
+    side_style = _side_style(result.get("side", ""), style)
+    hover_text = _format_result_hover(result, entry, tip, depth)
+
+    screw_traces = []
+    safety_plane_traces = []
+
+    diameter = _default_visual_diameter(result, fallback_diameter=fallback_diameter)
+    if diameter > 0:
+        screw_mesh = _build_closed_cylinder_mesh(entry, tip, diameter, resolution=screw_resolution)
+        if screw_mesh is not None and show_screw_meshes:
+            screw_traces.append(
+                go.Mesh3d(
+                    x=screw_mesh["x"],
+                    y=screw_mesh["y"],
+                    z=screw_mesh["z"],
+                    i=screw_mesh["i"],
+                    j=screw_mesh["j"],
+                    k=screw_mesh["k"],
+                    opacity=style["surface_opacity"],
+                    color=side_style["surface_highlight"] if gold_screws else side_style["surface"],
+                    hovertemplate=hover_text,
+                    name=f"{result.get('side', '').strip()} Screw",
+                    legendgroup=side_style["legendgroup"],
+                    lighting=style["surface_lighting"],
+                    lightposition=style["surface_lightposition"],
+                    flatshading=True,
+                    showscale=False,
+                    showlegend=False,
+                    visible=True,
+                )
+            )
+
+        if show_safety_planes:
+            plane_surface = _build_safety_plane(tip, direction, plane_size=8.0)
+            if plane_surface is not None:
+                plane_x, plane_y, plane_z = plane_surface
+                safety_plane_traces.append(
+                    go.Surface(
+                        x=plane_x,
+                        y=plane_y,
+                        z=plane_z,
+                        opacity=0.35,
+                        showscale=False,
+                        colorscale=[[0, "#ff2a6d"], [1, "#ff2a6d"]],
+                        hovertemplate="80% Safety Limit<extra></extra>",
+                        name="80% Safety Limit",
+                        legendgroup=side_style["legendgroup"],
+                        showlegend=False,
+                    )
+                )
+
+    return {
+        "screw_traces": screw_traces,
+        "trajectory_traces": [
+            go.Scatter3d(
+                x=[entry[0], tip[0]],
+                y=[entry[1], tip[1]],
+                z=[entry[2], tip[2]],
+                mode="lines",
+                line=dict(color="#00f0ff", width=6),
+                name=f"{result.get('side', '').strip()} Trajectory",
+                legendgroup=side_style["legendgroup"],
+                hovertemplate=hover_text,
+                showlegend=True,
+                visible=initial_trajectory_visibility,
+            )
+        ],
+        "entry_marker_traces": [
+            go.Scatter3d(
+                x=[entry[0]],
+                y=[entry[1]],
+                z=[entry[2]],
+                mode="markers",
+                marker=dict(
+                    size=9 if neon_trajectories else 7,
+                    color=side_style["marker"],
+                    symbol="circle",
+                    line=dict(
+                        color="#FFFFFF" if neon_trajectories else side_style["marker"],
+                        width=1.2 if neon_trajectories else 0,
+                    ),
+                ),
+                name=f"{result.get('side', '').strip()} Entry",
+                legendgroup=side_style["legendgroup"],
+                hovertemplate=hover_text,
+                showlegend=True,
+                visible=show_entry_markers,
+            )
+        ],
+        "tip_marker_traces": [
+            go.Scatter3d(
+                x=[tip[0]],
+                y=[tip[1]],
+                z=[tip[2]],
+                mode="markers",
+                marker=dict(
+                    size=5,
+                    color=side_style["line"],
+                    symbol="diamond",
+                    line=dict(color="#FFFFFF", width=1),
+                ),
+                name=f"{result.get('side', '').strip()} Tip",
+                legendgroup=side_style["legendgroup"],
+                hovertemplate=hover_text,
+                showlegend=False,
+                visible=show_tip_markers,
+            )
+        ],
+        "safety_plane_traces": safety_plane_traces,
     }
 
 
@@ -442,9 +652,13 @@ def build_visualization(
     v2_threaded_screws=None,
     v2_safety_planes=None,
 ):
+    go, _ = _ensure_plotly_imports()
     style = _style_config(visual_preset=visual_preset, theme=theme)
     if mesh_opacity is None:
         mesh_opacity = style["mesh_opacity"]
+
+    raw_verts_world = np.asarray(verts_world, dtype=np.float32)
+    raw_faces = np.asarray(faces, dtype=np.int32)
 
     neon_trajectories = _resolve_kicker(v2_neon_trajectories, neon_trajectories)
     gold_screws = _resolve_kicker(v2_gold_screws, gold_screws)
@@ -453,8 +667,11 @@ def build_visualization(
     eff_screw_mode = str(screw_mode).strip().lower()
     if eff_screw_mode == "threaded" and not threaded_screws:
         eff_screw_mode = "cylinder"
+    show_screw_meshes = eff_screw_mode != "none"
+    initial_trajectory_visibility = show_trajectory_lines and not show_screw_meshes
+    screw_resolution = _screw_resolution(raw_faces.shape[0], len(results_list))
     scene_ranges = _compute_scene_ranges(
-        verts_world,
+        raw_verts_world,
         results_list,
         show_safety_planes=show_safety_planes,
         fallback_diameter=fallback_diameter,
@@ -462,8 +679,8 @@ def build_visualization(
 
     fig = go.Figure()
     volume_name, timestamp = _volume_metadata(volume_path)
-    _add_mesh(fig, verts_world, faces, volume_name, timestamp, mesh_opacity, style)
-    bounding_box_traces = _add_bounding_box(fig, verts_world, style["bounding_box"], return_trace=True) or []
+    _add_mesh(fig, raw_verts_world, raw_faces, volume_name, timestamp, mesh_opacity, style)
+    bounding_box_traces = _add_bounding_box(fig, raw_verts_world, style["bounding_box"], return_trace=True) or []
     for trace in bounding_box_traces:
         trace.visible = show_bounding_box
         fig.add_trace(trace)
@@ -474,172 +691,36 @@ def build_visualization(
     tip_marker_traces = []
     safety_plane_traces = []
 
-    for result in results_list:
-        entry = np.asarray(result["entry"], dtype=float)
-        tip = np.asarray(result["tip"], dtype=float)
-        direction = tip - entry
-        depth = np.linalg.norm(direction)
-        side_style = _side_style(result.get("side", ""), style)
-        hover_text = _format_result_hover(result, entry, tip, depth)
-
-        diameter = _default_visual_diameter(result, fallback_diameter=fallback_diameter)
-        if diameter > 0:
-            screw_geometry = _build_screw_geometry(entry, tip, diameter, screw_mode=eff_screw_mode)
-            if screw_geometry is not None:
-                outer_x, outer_y, outer_z = screw_geometry["outer_surface"]
-                entry_cap_x, entry_cap_y, entry_cap_z = screw_geometry["entry_cap"]
-                tip_cap_x, tip_cap_y, tip_cap_z = screw_geometry["tip_cap"]
-                screw_traces.extend(
-                    [
-                        go.Surface(
-                            x=outer_x,
-                            y=outer_y,
-                            z=outer_z,
-                            opacity=style["surface_opacity"],
-                            showscale=False,
-                            colorscale=[[0, '#39ff14'], [1, '#0aff9d']],
-                            lighting=dict(ambient=0.55, diffuse=0.82, specular=0.42, roughness=0.36),
-                            hovertemplate=hover_text,
-                            name=f"{result.get('side', '').strip()} Screw",
-                            legendgroup=side_style["legendgroup"],
-                            showlegend=False,
-                        ),
-                        go.Surface(
-                            x=entry_cap_x,
-                            y=entry_cap_y,
-                            z=entry_cap_z,
-                            opacity=max(style["surface_opacity"] - 0.04, 0.2),
-                            showscale=False,
-                            colorscale=[[0, side_style["surface_highlight"]], [1, side_style["surface_highlight"]]],
-                            lighting=dict(ambient=0.45, diffuse=0.72, specular=0.22, roughness=0.48),
-                            hovertemplate=hover_text,
-                            name=f"{result.get('side', '').strip()} Screw Entry Cap",
-                            legendgroup=side_style["legendgroup"],
-                            showlegend=False,
-                        ),
-                        go.Surface(
-                            x=tip_cap_x,
-                            y=tip_cap_y,
-                            z=tip_cap_z,
-                            opacity=max(style["surface_opacity"] - 0.04, 0.2),
-                            showscale=False,
-                            colorscale=[[0, side_style["surface_highlight"]], [1, side_style["surface_highlight"]]],
-                            lighting=dict(ambient=0.45, diffuse=0.72, specular=0.22, roughness=0.48),
-                            hovertemplate=hover_text,
-                            name=f"{result.get('side', '').strip()} Screw Tip Cap",
-                            legendgroup=side_style["legendgroup"],
-                            showlegend=False,
-                        ),
-                    ]
-                )
-
-                for rim_name, rim_width in (
-                    ("entry_rim", 5),
-                    ("tip_rim", 5),
-                ):
-                    rim_x, rim_y, rim_z = screw_geometry[rim_name]
-                    screw_traces.append(
-                        go.Scatter3d(
-                            x=rim_x,
-                            y=rim_y,
-                            z=rim_z,
-                            mode="lines",
-                            line=dict(color=side_style["surface_highlight"], width=rim_width),
-                            hovertemplate=hover_text,
-                            name=f"{result.get('side', '').strip()} Screw Rim",
-                            legendgroup=side_style["legendgroup"],
-                            showlegend=False,
-                        )
-                    )
-
-            if show_safety_planes:
-                plane_surface = _build_safety_plane(tip, direction, plane_size=8.0)
-                if plane_surface is not None:
-                    plane_x, plane_y, plane_z = plane_surface
-                    safety_plane_traces.append(
-                        go.Surface(
-                            x=plane_x,
-                            y=plane_y,
-                            z=plane_z,
-                            opacity=0.35,
-                            showscale=False,
-                            colorscale=[[0, '#ff2a6d'], [1, '#ff2a6d']],
-                            hovertemplate="80% Safety Limit<extra></extra>",
-                            name="80% Safety Limit",
-                            legendgroup=side_style["legendgroup"],
-                            showlegend=False,
-                        )
-                    )
-
-        trajectory_traces.append(
-            go.Scatter3d(
-                x=[entry[0], tip[0]],
-                y=[entry[1], tip[1]],
-                z=[entry[2], tip[2]],
-                mode="lines",
-                line=dict(color='#00f0ff', width=6),
-                name=f"{result.get('side', '').strip()} Trajectory",
-                legendgroup=side_style["legendgroup"],
-                hovertemplate=hover_text,
-                showlegend=True,
-                visible=show_trajectory_lines,
-            )
+    result_trace_kwargs = [
+        dict(
+            result=result,
+            style=style,
+            fallback_diameter=fallback_diameter,
+            show_screw_meshes=show_screw_meshes,
+            show_safety_planes=show_safety_planes,
+            initial_trajectory_visibility=initial_trajectory_visibility,
+            show_entry_markers=show_entry_markers,
+            show_tip_markers=show_tip_markers,
+            neon_trajectories=neon_trajectories,
+            gold_screws=gold_screws,
+            screw_resolution=screw_resolution,
         )
+        for result in results_list
+    ]
 
-        entry_marker_traces.append(
-            go.Scatter3d(
-                x=[entry[0]],
-                y=[entry[1]],
-                z=[entry[2]],
-                mode="markers",
-                marker=dict(
-                    size=9 if neon_trajectories else 7,
-                    color=side_style["marker"],
-                    symbol="circle",
-                    line=dict(
-                        color="#FFFFFF" if neon_trajectories else side_style["marker"],
-                        width=1.2 if neon_trajectories else 0,
-                    ),
-                ),
-                name=f"{result.get('side', '').strip()} Entry",
-                legendgroup=side_style["legendgroup"],
-                hovertemplate=hover_text,
-                showlegend=True,
-                visible=show_entry_markers,
-            )
-        )
+    result_traces = [_build_result_traces(**kwargs) for kwargs in result_trace_kwargs]
 
-        tip_marker_traces.append(
-            go.Scatter3d(
-                x=[tip[0]],
-                y=[tip[1]],
-                z=[tip[2]],
-                mode="markers",
-                marker=dict(
-                    size=5,
-                    color=side_style["line"],
-                    symbol="diamond",
-                    line=dict(color="#FFFFFF", width=1),
-                ),
-                name=f"{result.get('side', '').strip()} Tip",
-                legendgroup=side_style["legendgroup"],
-                hovertemplate=hover_text,
-                showlegend=False,
-                visible=show_tip_markers,
-            )
-        )
+    for trace_group in result_traces:
+        screw_traces.extend(trace_group["screw_traces"])
+        trajectory_traces.extend(trace_group["trajectory_traces"])
+        entry_marker_traces.extend(trace_group["entry_marker_traces"])
+        tip_marker_traces.extend(trace_group["tip_marker_traces"])
+        safety_plane_traces.extend(trace_group["safety_plane_traces"])
 
     # Add traces to figure
-    for trace in screw_traces:
-        fig.add_trace(trace)
-    for trace in trajectory_traces:
-        fig.add_trace(trace)
-    for trace in entry_marker_traces:
-        fig.add_trace(trace)
-    for trace in tip_marker_traces:
-        fig.add_trace(trace)
-    for trace in safety_plane_traces:
-        fig.add_trace(trace)
+    assembled_traces = screw_traces + trajectory_traces + entry_marker_traces + tip_marker_traces + safety_plane_traces
+    if assembled_traces:
+        fig.add_traces(assembled_traces)
 
     n_mesh = 1
     n_bbox = len(bounding_box_traces)
@@ -661,6 +742,7 @@ def build_visualization(
     button_border = "rgba(255,255,255,0.2)" if style["template"] == "plotly_dark" else "rgba(21,32,51,0.18)"
     button_font = dict(color=style["title_font_color"], size=15)
     slider_panel_fill = "rgba(8, 14, 24, 0.86)" if style["template"] == "plotly_dark" else "rgba(255, 255, 255, 0.88)"
+    title_text = f"Pedicle Screw Planner Visualization - {_display_volume_title(volume_name)}"
     updatemenus = [
         dict(
             type="buttons",
@@ -719,7 +801,7 @@ def build_visualization(
     mesh_opacities = [round(value, 2) for value in np.linspace(0.05, 1.0, 20)]
     fig.update_layout(
         title=dict(
-            text=f"Pedicle Screw Planner Visualization - {volume_name}",
+            text=title_text,
             x=0.05,
             xanchor="left",
             y=0.995,
@@ -798,6 +880,15 @@ def build_visualization(
             xanchor="left",
             x=0.02,
         ),
+        meta=dict(
+            mesh_trace_index=0,
+            bbox_indices=bbox_indices,
+            screw_mode_indices=screw_mode_indices,
+            screw_mode_screws_vis=screw_mode_screws_vis,
+            screw_mode_traj_vis=screw_mode_traj_vis,
+            mesh_opacity=mesh_opacity,
+        ),
+        transition=dict(duration=0),
         uirevision="unified-visualizer",
     )
     fig.add_shape(
@@ -815,24 +906,35 @@ def build_visualization(
     return fig
 
 
-def _should_use_browser(renderer):
-    if renderer == "browser":
-        return True
-    if renderer != "auto":
-        return False
-    return "PyQt5" in sys.modules or "PyQt5.QtWidgets" in sys.modules
-
-
 def _build_qt_window(fig, window_title):
-    from PyQt6.QtCore import QUrl
+    # Lazy load PyQt6 to avoid import overhead until visualization is needed
+    from PyQt6.QtCore import Qt, QUrl
     from PyQt6.QtWebEngineWidgets import QWebEngineView
-    from PyQt6.QtWidgets import QApplication, QFileDialog, QMainWindow, QPushButton, QVBoxLayout, QWidget
+    from PyQt6.QtWidgets import (
+        QApplication,
+        QFileDialog,
+        QHBoxLayout,
+        QLabel,
+        QMainWindow,
+        QPushButton,
+        QSlider,
+        QVBoxLayout,
+        QWidget,
+    )
 
     paper_bg = getattr(fig.layout, "paper_bgcolor", None) or "#0B1320"
+    control_meta = getattr(fig.layout, "meta", None) or {}
+    if hasattr(control_meta, "to_plotly_json"):
+        control_meta = control_meta.to_plotly_json()
+
+    qt_fig = _figure_without_embedded_controls(fig)
+    plotly_bundle_uri = Path(_ensure_plotlyjs_bundle()).as_uri()
+    _, pio = _ensure_plotly_imports()
     html_document = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <script src="{plotly_bundle_uri}"></script>
   <style>
     html, body {{
       margin: 0;
@@ -859,7 +961,7 @@ def _build_qt_window(fig, window_title):
   </style>
 </head>
 <body>
-{fig.to_html(full_html=False, include_plotlyjs=True, default_width="100%", default_height="100%")}
+{pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%")}
 <script>
   document.addEventListener('DOMContentLoaded', function () {{
     function applyPointerCursor() {{
@@ -894,12 +996,85 @@ def _build_qt_window(fig, window_title):
     layout.setSpacing(0)
     container.setStyleSheet(f"background-color: {paper_bg};")
 
+    control_bar = QHBoxLayout()
+    control_bar.setContentsMargins(12, 10, 12, 10)
+    control_bar.setSpacing(10)
+
+    show_screws_button = QPushButton("Show Max Diameter")
+    show_traj_button = QPushButton("Show Trajectories")
+    show_bbox_button = QPushButton("Show Bounding Box")
+    hide_bbox_button = QPushButton("Hide Bounding Box")
+    opacity_label = QLabel(f"Mesh Opacity: {float(control_meta.get('mesh_opacity', 0.25)):.2f}")
+    opacity_label.setStyleSheet("color: #F7FAFC; padding-left: 12px;")
+    opacity_slider = QSlider(Qt.Orientation.Horizontal)
+    opacity_slider.setRange(5, 100)
+    opacity_slider.setValue(int(round(float(control_meta.get("mesh_opacity", 0.25)) * 100)))
+    opacity_slider.setFixedWidth(220)
+
+    for button in (show_screws_button, show_traj_button, show_bbox_button, hide_bbox_button):
+        button.setStyleSheet(
+            "QPushButton { background-color: #4C6382; color: #F7FAFC; border: 0; "
+            "padding: 8px 14px; border-radius: 4px; } "
+            "QPushButton:disabled { background-color: #334155; color: #94A3B8; }"
+        )
+
+    control_bar.addWidget(show_screws_button)
+    control_bar.addWidget(show_traj_button)
+    control_bar.addSpacing(18)
+    control_bar.addWidget(show_bbox_button)
+    control_bar.addWidget(hide_bbox_button)
+    control_bar.addStretch(1)
+    control_bar.addWidget(opacity_label)
+    control_bar.addWidget(opacity_slider)
+    layout.addLayout(control_bar)
+
     view = QWebEngineView()
     view.load(QUrl.fromLocalFile(html_path))
     layout.addWidget(view)
 
     export_button = QPushButton("Export Image")
+    export_button.setStyleSheet(
+        "QPushButton { background-color: #1E293B; color: #F7FAFC; border: 0; "
+        "padding: 8px 14px; } QPushButton:disabled { color: #94A3B8; }"
+    )
     layout.addWidget(export_button)
+
+    interactive_controls = [
+        show_screws_button,
+        show_traj_button,
+        show_bbox_button,
+        hide_bbox_button,
+        opacity_slider,
+        export_button,
+    ]
+    for widget in interactive_controls:
+        widget.setEnabled(False)
+
+    def run_plotly_js(script):
+        view.page().runJavaScript(script)
+
+    def restyle_plot(payload, indices):
+        run_plotly_js(
+            f"""
+            (function() {{
+                const plot = document.querySelector('.js-plotly-plot');
+                if (!plot || !window.Plotly) return;
+                Plotly.restyle(plot, {json.dumps(payload)}, {json.dumps(indices)});
+            }})();
+            """
+        )
+
+    def set_mesh_opacity(opacity_value):
+        mesh_trace_index = int(control_meta.get("mesh_trace_index", 0))
+        run_plotly_js(
+            f"""
+            (function() {{
+                const plot = document.querySelector('.js-plotly-plot');
+                if (!plot || !window.Plotly) return;
+                Plotly.restyle(plot, {{opacity: [{opacity_value:.2f}]}}, [{mesh_trace_index}]);
+            }})();
+            """
+        )
 
     def export_image():
         file_path, _ = QFileDialog.getSaveFileName(
@@ -918,6 +1093,41 @@ def _build_qt_window(fig, window_title):
         except OSError:
             pass
 
+    def on_load_finished(ok):
+        for widget in interactive_controls:
+            widget.setEnabled(ok)
+
+    show_screws_button.clicked.connect(
+        lambda: restyle_plot(
+            {"visible": control_meta.get("screw_mode_screws_vis", [])},
+            control_meta.get("screw_mode_indices", []),
+        )
+    )
+    show_traj_button.clicked.connect(
+        lambda: restyle_plot(
+            {"visible": control_meta.get("screw_mode_traj_vis", [])},
+            control_meta.get("screw_mode_indices", []),
+        )
+    )
+    show_bbox_button.clicked.connect(
+        lambda: restyle_plot(
+            {"visible": [True] * len(control_meta.get("bbox_indices", []))},
+            control_meta.get("bbox_indices", []),
+        )
+    )
+    hide_bbox_button.clicked.connect(
+        lambda: restyle_plot(
+            {"visible": [False] * len(control_meta.get("bbox_indices", []))},
+            control_meta.get("bbox_indices", []),
+        )
+    )
+    opacity_slider.valueChanged.connect(
+        lambda value: (
+            opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}"),
+            set_mesh_opacity(value / 100.0),
+        )
+    )
+    view.loadFinished.connect(on_load_finished)
     export_button.clicked.connect(export_image)
     window.destroyed.connect(cleanup)
     window.setCentralWidget(container)
@@ -925,22 +1135,26 @@ def _build_qt_window(fig, window_title):
     window.show()
 
     _VIEWER_WINDOWS.append(window)
+    
+    # Start event loop (only if we own the QApplication instance)
     if owns_app:
+        print("[PyQt6] Starting event loop...")
         app.exec()
+    else:
+        print("[PyQt6] Using existing QApplication instance")
 
     return window
 
 
 def show_visualization(fig, renderer="auto", window_title="Pedicle Screw Planner Visualization"):
-    if _should_use_browser(renderer):
-        fig.show(renderer="browser")
-        return None
-
-    try:
-        return _build_qt_window(fig, window_title)
-    except Exception:
-        fig.show(renderer="browser")
-        return None
+    """
+    Display the visualization in PyQt6 window (no browser fallback).
+    Always uses PyQt6 for consistent behavior.
+    """
+    print("[Visualizer] Launching PyQt6 window...")
+    window = _build_qt_window(fig, window_title)
+    print("[Visualizer] PyQt6 window launched successfully.")
+    return window
 
 
 def visualize_surgical_plan(

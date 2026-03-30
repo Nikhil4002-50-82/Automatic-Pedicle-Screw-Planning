@@ -1,22 +1,161 @@
-[Runner] Centroid (L5 robust) = [-51.11 134.89   0.5 ]
-[Runner] Anterior body center (L5 robust) = [-50.08 137.    -1.57]
+PS C:\Users\heman\OneDrive\Documents\GitHub\Automatic-Pedicle-Screw-Planning> python app/plan_and_visualize_l5_unified.py
+[Runner] Segmented file: X:\HTIC\Spine Datasets\Outputs\cadverdata_04_W_Spine_20250724230511_4_segmented_vertebrae_L1_vertebrae_L5.nii
+[Runner] Loading segmentation for pedicle localization...
+[Runner] L5-specific extraction: Isolating L5 (label=1) from multi-level segmentation
+[Runner] Extracted L5: 185786 voxels
+[Runner] Found segment: label=1 → L5
+[Mesh] Volume shape: (512, 512, 1147), voxel count: 185786
+[Mesh] Mesh built: 41739 vertices, 83486 faces
+[Runner] Centroid (L5 robust) = [   10.95    86.32 -1160.47]
+[Runner] SI axis  = [-0.0285  0.3405  0.9398]
+[Runner] LR axis  = [ 0.9877 -0.1349  0.0788]
+[Runner] AP axis  = [ 0.1536  0.9305 -0.3325]
+[Runner] Anterior body center (L5 robust) = [   10.74    86.15 -1161.2 ]
 [Runner] Locating pedicle centers (L5-specific filters)...
-[Runner] Left  pedicle center = [-60.11 133.39   0.5 ]
-[Runner] Right pedicle center = [-42.11 130.39   2.  ]
-  [Pedicle Dim] Width (LR): +32.7 / ΓêÆ15.9 = 48.6 mm
-  [Pedicle Dim] Height (SI): +13.8 / ΓêÆ12.0 = 25.8 mm
-  [Pedicle Dim] Width (LR): +14.1 / ΓêÆ34.2 = 48.3 mm
-  [Pedicle Dim] Height (SI): +13.8 / ΓêÆ13.2 = 27.0 mm
-[Runner] Mediolateral distance from centroid: Left=8.6mm, Right=9.7mm
-[Runner] Final Left center  = [-60.11 133.39   0.5 ]
-[Runner] Final Right center = [-43.24 130.38   1.51]
+[Runner] Left  pedicle center = [   -4.69    80.06 -1159.87]
+[Runner] Right pedicle center = [   21.59    75.68 -1157.47]
+[Runner] Measuring left pedicle dimensions...
+  [Pedicle Dim] Width (LR): +38.1 / −10.5 = 48.6 mm
+  [Pedicle Dim] Height (SI): +11.1 / −10.5 = 21.6 mm
+[Runner] Measuring right pedicle dimensions...
+  [Pedicle Dim] Width (LR): +11.7 / −37.5 = 49.2 mm
+  [Pedicle Dim] Height (SI): +10.5 / −10.5 = 21.0 mm
+[Runner] Mediolateral distance from centroid: Left=14.6mm, Right=12.2mm
+[Runner] Right point is closer to midline. Symmetrizing Left to match Right's lateral offset...
+[Runner] Final Left center  = [   -2.47    78.96 -1159.39]
+[Runner] Final Right center = [   21.59    75.68 -1157.47]
+
 --- Constructing Left Trajectory ---
-  [Local PCA] Computed Trajectory: [0. 1. 0.]
-[Runner] Final Left PCA Trajectory: [0.345  0.9384 0.0207]
-[Runner] Left Trajectory Tip: [-6.7180e+01  1.1416e+02  7.0000e-02]
-[Runner] Left Bone Length: 13.50 mm (actual), 13.50 mm (used)
+  [WorldTransform] AP   dir (world) = [ 0.1536  0.9305 -0.3325]
+  [WorldTransform] Medial dir (world) = [ 0.9877 -0.1349  0.0788]
+  [WorldTransform] World direction  = [ 0.543586  0.832975 -0.103279]
+  [Bone Path] Anterior cortex at 51.0 mm from entry point
+=================================================================
+  L5 PEDICLE SCREW PLAN — LEFT SIDE
+=================================================================
+  Input Parameters:
+    Entry point            = [  -17.69    55.64 -1156.5 ]
+    Pedicle width          = 30.0 mm
+    Pedicle height         = 21.6 mm
+    Vertebral body depth   = 51.0 mm
+    Transverse angle (TPA) = 25.0°
+    Sagittal angle  (SPA)  = 10.0°
+    Safety margin          = 2.0 mm
+
+  — Step 1: Compute trajectory direction —
+  [Trajectory] Baseline vector v0 = [0. 1. 0.]
+  [Trajectory] After Z-rotation by +25.0°  →  v1 = [-0.422618  0.906308  0.      ]
+  [Trajectory] After X-rotation by +10.0°  →  v2 = [-0.422618  0.892539  0.157379]
+  [Trajectory] Final unit vector = [-0.422618  0.892539  0.157379]
+  — Step 1b: Calculate world trajectory dynamically —
+  [WorldTransform] AP   dir (world) = [ 0.1536  0.9305 -0.3325]
+  [WorldTransform] Medial dir (world) = [ 0.9877 -0.1349  0.0788]
+  [WorldTransform] World direction  = [ 0.543586  0.832975 -0.103279]
+
+  — Step 2: Select screw diameter —
+  [Diameter] Pedicle width=30.0 mm, height=21.6 mm
+  [Diameter] Limiting dimension = 21.6 mm
+  [Diameter] Max safe diameter  = 21.6 − 2×2.0 = 17.60 mm
+  [Diameter] Selected standard diameter = 8.5 mm
+
+  — Step 3: Compute screw length —
+  [Length] Vertebral body depth = 51.0 mm
+  [Length] Raw length = 51.0 − 2.0 = 49.00 mm
+  [Length] Selected standard length = 45 mm
+
+  — Step 4: Compute tip point —
+  [Tip] entry=[  -17.69    55.64 -1156.5 ]  +  dir×45 mm  =  tip=[    6.77    93.12 -1161.15]      
+
+  — Step 5: Safety validation —
+  [Validate] Running safety checks...
+  [Validate] PASS: diameter 8.5 < pedicle width 30.0
+  [Validate] PASS: diameter 8.5 < pedicle height 21.6
+  [Validate] PASS: length 45 <= body depth 51.0
+  [Validate] PASS: TPA 25.0° within (15.0, 45.0)
+  [Validate] PASS: SPA 10.0° within (-10.0, 10.0)
+  [Validate] All safety checks PASSED
+
+  — Result Summary —
+    Trajectory (local)     = [-0.422618  0.892539  0.157379]
+    Trajectory (world)     = [ 0.543586  0.832975 -0.103279]
+    Screw diameter         = 8.5 mm
+    Screw length           = 45 mm
+    Entry point            = [  -17.69    55.64 -1156.5 ]
+    Tip point              = [    6.77    93.12 -1161.15]
+    ✓ No warnings — plan is safe
+=================================================================
+
+[Runner] Left Entry: [  -17.69    55.64 -1156.5 ]
+[Runner] Left Trajectory Tip: [    6.77    93.12 -1161.15]
+[Runner] Left Bone Length: 51.00 mm (actual), 45.00 mm (used)
+
 --- Constructing Right Trajectory ---
-  [Local PCA] Computed Trajectory: [ 0.1026 -0.0329 -0.9942]
-[Runner] Final Right PCA Trajectory: [ 0.0085 -0.0161 -0.9998]
-[Runner] Right Trajectory Tip: [-43.12 130.16 -12.48]
-[Runner] Right Bone Length: 26.00 mm (actual), 26.00 mm (used)
+  [WorldTransform] AP   dir (world) = [ 0.1536  0.9305 -0.3325]
+  [WorldTransform] Medial dir (world) = [-0.9877  0.1349 -0.0788]
+  [WorldTransform] World direction  = [-0.278958  0.945328 -0.168931]
+  [Bone Path] Anterior cortex at 49.0 mm from entry point
+=================================================================
+  L5 PEDICLE SCREW PLAN — RIGHT SIDE
+=================================================================
+  Input Parameters:
+    Entry point            = [   28.99    50.63 -1153.  ]
+    Pedicle width          = 30.0 mm
+    Pedicle height         = 21.0 mm
+    Vertebral body depth   = 49.0 mm
+    Transverse angle (TPA) = 25.0°
+    Sagittal angle  (SPA)  = 10.0°
+    Safety margin          = 2.0 mm
+
+  — Step 1: Compute trajectory direction —
+  [Trajectory] Baseline vector v0 = [0. 1. 0.]
+  [Trajectory] After Z-rotation by -25.0°  →  v1 = [0.422618 0.906308 0.      ]
+  [Trajectory] After X-rotation by +10.0°  →  v2 = [0.422618 0.892539 0.157379]
+  [Trajectory] Final unit vector = [0.422618 0.892539 0.157379]
+  — Step 1b: Calculate world trajectory dynamically —
+  [WorldTransform] AP   dir (world) = [ 0.1536  0.9305 -0.3325]
+  [WorldTransform] Medial dir (world) = [-0.9877  0.1349 -0.0788]
+  [WorldTransform] World direction  = [-0.278958  0.945328 -0.168931]
+
+  — Step 2: Select screw diameter —
+  [Diameter] Pedicle width=30.0 mm, height=21.0 mm
+  [Diameter] Limiting dimension = 21.0 mm
+  [Diameter] Max safe diameter  = 21.0 − 2×2.0 = 17.00 mm
+  [Diameter] Selected standard diameter = 8.5 mm
+
+  — Step 3: Compute screw length —
+  [Length] Vertebral body depth = 49.0 mm
+  [Length] Raw length = 49.0 − 2.0 = 47.00 mm
+  [Length] Selected standard length = 45 mm
+
+  — Step 4: Compute tip point —
+  [Tip] entry=[   28.99    50.63 -1153.  ]  +  dir×45 mm  =  tip=[   16.43    93.17 -1160.6 ]      
+
+  — Step 5: Safety validation —
+  [Validate] Running safety checks...
+  [Validate] PASS: diameter 8.5 < pedicle width 30.0
+  [Validate] PASS: diameter 8.5 < pedicle height 21.0
+  [Validate] PASS: length 45 <= body depth 49.0
+  [Validate] PASS: TPA 25.0° within (15.0, 45.0)
+  [Validate] PASS: SPA 10.0° within (-10.0, 10.0)
+  [Validate] All safety checks PASSED
+
+  — Result Summary —
+    Trajectory (local)     = [0.422618 0.892539 0.157379]
+    Trajectory (world)     = [-0.278958  0.945328 -0.168931]
+    Screw diameter         = 8.5 mm
+    Screw length           = 45 mm
+    Entry point            = [   28.99    50.63 -1153.  ]
+    Tip point              = [   16.43    93.17 -1160.6 ]
+    ✓ No warnings — plan is safe
+=================================================================
+
+[Runner] Right Entry: [   28.99    50.63 -1153.  ]
+[Runner] Right Trajectory Tip: [   16.43    93.17 -1160.6 ]
+[Runner] Right Bone Length: 49.00 mm (actual), 45.00 mm (used)
+[Timer] Total runtime (before visualization): 497.52 seconds (8.29 minutes)
+Creating merged surgical visualization...
+[Visualizer] Launching PyQt6 window...
+[PyQt6] Starting event loop...
+js: Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently
+[Visualizer] PyQt6 window launched successfully.
+[Runner] L5 entry and trajectory planning and visualization completed.
