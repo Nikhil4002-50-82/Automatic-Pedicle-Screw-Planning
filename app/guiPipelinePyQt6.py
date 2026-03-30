@@ -3,19 +3,20 @@ import os
 import time
 from datetime import datetime
 
-from PyQt5.QtWidgets import (
+# Updated Imports for PyQt6
+from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QFileDialog,
     QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QTextEdit, QHeaderView, QSplashScreen
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import QFont, QPixmap, QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QPixmap, QColor
 
-# Importing your existing modules
+# Importing your existing modules (Unchanged)
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometryV3 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
-from visualizerV2 import visualize_surgical_plan
+from geometryV4 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from visualizerV3 import visualize_surgical_plan
 
 # ---------- REAL TIME TERMINAL STREAM ----------
 class LogStream(QObject):
@@ -30,7 +31,7 @@ class LogStream(QObject):
     def flush(self):
         pass
 
-# ---------- VISUALIZER THREAD (Fixes the Freeze) ----------
+# ---------- VISUALIZER THREAD ----------
 class VisualizerWorker(QThread):
     def __init__(self, verts, faces, results):
         super().__init__()
@@ -40,7 +41,6 @@ class VisualizerWorker(QThread):
 
     def run(self):
         try:
-            # Running this in a thread prevents the Main GUI from freezing
             visualize_surgical_plan(self.verts, self.faces, self.results)
         except Exception as e:
             print(f"VISUALIZER ERROR: {e}")
@@ -91,7 +91,7 @@ class Worker(QThread):
 
         self.finished.emit(vertsWorld, faces, resultsList)
 
-# ---------- MAIN GUI V2 ----------
+# ---------- MAIN GUI V2 (PyQt6 Port) ----------
 class GUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -99,7 +99,7 @@ class GUI(QWidget):
         self.verts = None
         self.faces = None
         self.results = []
-        self.viz_thread = None # Reference to visualizer thread
+        self.viz_thread = None 
         self.initUI()
 
         self.stream = LogStream()
@@ -117,7 +117,8 @@ class GUI(QWidget):
 
         title = QLabel("GEOMETRY BASED PEDICLE SCREW PLANNING SYSTEM")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
-        title.setAlignment(Qt.AlignCenter)
+        # Qt.AlignCenter -> Qt.AlignmentFlag.AlignCenter
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter) 
         main_layout.addWidget(title)
 
         ctrl_layout = QHBoxLayout()
@@ -141,9 +142,9 @@ class GUI(QWidget):
         headers = ["VERTEBRA", "SIDE", "DIAMETER (mm)", "LENGTH (mm)", "AXIAL ∠", "SAGITTAL ∠", "ENTRY POINT"]
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # QHeaderView.Stretch -> QHeaderView.ResizeMode.Stretch
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
-        self.table.setStyleSheet("QTableWidget { border: 1px solid #dcdde1; gridline-color: #f1f2f6; }")
         main_layout.addWidget(self.table)
 
         self.visualBtn = QPushButton("LAUNCH 3D SURGICAL VIEW")
@@ -171,17 +172,41 @@ class GUI(QWidget):
         self.setLayout(main_layout)
 
         self.setStyleSheet("""
-            QWidget { background-color: #f5f6fa; font-family: 'Segoe UI'; }
+            QWidget { 
+                background-color: #f5f6fa; 
+                font-family: 'Segoe UI'; 
+            }
+            
+            /* Default Table Style (Black text on White/Light background) */
+            QTableWidget { 
+                background-color: #ffffff; 
+                color: #000000; 
+                gridline-color: #dcdde1;
+                selection-background-color: #2980b9; /* Blue background on select/hover */
+                selection-color: #ffffff;            /* White text on select/hover */
+                border: 1px solid #dcdde1;
+            }
+
+            /* Ensure the headers stay dark with white text */
+            QHeaderView::section { 
+                background-color: #34495e; 
+                color: white; 
+                padding: 8px; 
+                font-weight: bold; 
+                border: none;
+            }
+
+            /* Keep your buttons consistent */
             QPushButton { 
-                background-color: #2980b9; color: white; border: none; 
-                padding: 12px 24px; border-radius: 4px; font-weight: bold; 
+                background-color: #2980b9; 
+                color: white; 
+                border: none; 
+                padding: 12px 24px; 
+                border-radius: 4px; 
+                font-weight: bold; 
             }
             QPushButton:hover { background-color: #3498db; }
             QPushButton:disabled { background-color: #bdc3c7; }
-            QHeaderView::section { 
-                background-color: #34495e; color: white; 
-                padding: 8px; font-weight: bold; border: none;
-            }
         """)
 
     def updateLog(self, text):
@@ -224,7 +249,8 @@ class GUI(QWidget):
         self.table.setItem(row, 6, QTableWidgetItem(entry_str))
 
         for col in range(7):
-            self.table.item(row, col).setTextAlignment(Qt.AlignCenter)
+            # Qt.AlignCenter -> Qt.AlignmentFlag.AlignCenter
+            self.table.item(row, col).setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def finishPipeline(self, v, f, r):
         self.verts = v
@@ -237,7 +263,6 @@ class GUI(QWidget):
     def visualize(self):
         if self.results:
             print("SYSTEM: Initializing 3D Surgical Visualization Engine...")
-            # Use a separate thread so the GUI doesn't freeze during load
             self.viz_thread = VisualizerWorker(self.verts, self.faces, self.results)
             self.viz_thread.start()
 
@@ -253,4 +278,5 @@ if __name__ == "__main__":
     time.sleep(1) 
     window.show()
     splash.finish(window)
-    sys.exit(app.exec_())
+    # .exec_() -> .exec()
+    sys.exit(app.exec())
