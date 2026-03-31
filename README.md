@@ -331,14 +331,21 @@ The repo now includes a focused desktop viewer for quickly inspecting CT volumes
 Run it with:
 
 ```bash
-python app/ct_mask_viewer.py
+python app/ct_viewer/ct_mask_viewer.py
 ```
 
 Current viewer features:
 
-* Load a CT volume in NIfTI format
+* Load a CT volume from a NIfTI file or a DICOM series folder
 * Load one or more mask files, or load a whole folder of masks
 * View synchronized axial, coronal, and sagittal slices
 * Adjust CT window center and width with presets or manual sliders
 * Toggle masks on and off and control overlay opacity
 * Click in any slice to jump the crosshair and use the mouse wheel to scroll slices
+
+You can also launch directly into a study:
+
+```bash
+python app/ct_viewer/ct_mask_viewer.py path/to/ct.nii.gz
+python app/ct_viewer/ct_mask_viewer.py path/to/dicom_folder
+```
