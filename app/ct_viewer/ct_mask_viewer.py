@@ -589,23 +589,11 @@ class CTMaskViewer(QMainWindow):
             button.setMinimumHeight(42)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        button_layout = QVBoxLayout()
-        button_layout.setSpacing(10)
-        button_layout.addWidget(self.load_ct_button)
-        button_layout.addWidget(self.load_dicom_button)
-        button_layout.addWidget(self.add_masks_button)
-        button_layout.addWidget(self.add_mask_folder_button)
-        button_layout.addWidget(self.reset_view_button)
-        button_layout.addWidget(self.clear_masks_button)
-
         self.volume_info_label = QLabel("No CT loaded")
         self.volume_info_label.setWordWrap(True)
         self.volume_info_label.setObjectName("infoBlock")
         self.volume_info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.volume_info_label.setMaximumHeight(150)
-
-        window_header = QLabel("Windowing")
-        window_header.setObjectName("sectionLabel")
 
         self.window_preset_combo = QComboBox()
         self.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
@@ -630,27 +618,39 @@ class CTMaskViewer(QMainWindow):
         self.crosshair_checkbox = QCheckBox("Show crosshair")
         self.crosshair_checkbox.setChecked(True)
 
-        mask_header = QLabel("Masks")
-        mask_header.setObjectName("sectionLabel")
-
         self.mask_list = QListWidget()
-        self.mask_list.setMinimumHeight(240)
+        self.mask_list.setMinimumHeight(210)
         self.mask_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         hint = QLabel("Click inside any slice to jump the crosshair. Mouse wheel scrolls that plane.")
         hint.setWordWrap(True)
         hint.setObjectName("helperText")
 
+        import_section = ct_widgets.CollapsibleSection("Import & Actions", expanded=False)
+        import_section.content_layout.addWidget(self.load_ct_button)
+        import_section.content_layout.addWidget(self.load_dicom_button)
+        import_section.content_layout.addWidget(self.add_masks_button)
+        import_section.content_layout.addWidget(self.add_mask_folder_button)
+        import_section.content_layout.addWidget(self.reset_view_button)
+        import_section.content_layout.addWidget(self.clear_masks_button)
+
+        window_section = ct_widgets.CollapsibleSection("Windowing", expanded=False)
+        windowing_layout = QVBoxLayout()
+        windowing_layout.setSpacing(10)
+        windowing_layout.addLayout(controls_form)
+        windowing_layout.addWidget(self.crosshair_checkbox)
+        window_section.content_layout.addLayout(windowing_layout)
+
+        masks_section = ct_widgets.CollapsibleSection("Masks", expanded=True)
+        masks_section.content_layout.addWidget(self.mask_list)
+        masks_section.content_layout.addWidget(hint)
+
         content_layout.addWidget(title)
         content_layout.addWidget(subtitle)
-        content_layout.addLayout(button_layout)
         content_layout.addWidget(self.volume_info_label)
-        content_layout.addWidget(window_header)
-        content_layout.addLayout(controls_form)
-        content_layout.addWidget(self.crosshair_checkbox)
-        content_layout.addWidget(mask_header)
-        content_layout.addWidget(self.mask_list, 1)
-        content_layout.addWidget(hint)
+        content_layout.addWidget(import_section)
+        content_layout.addWidget(window_section)
+        content_layout.addWidget(masks_section, 1)
         content_layout.addStretch(1)
 
         scroll.setWidget(content)
@@ -807,6 +807,21 @@ class CTMaskViewer(QMainWindow):
                 background: #12263d;
                 color: #8aa2ba;
                 border: 1px solid #22405f;
+            }
+            QToolButton#sectionToggle {
+                color: #f6fbff;
+                background: rgba(19, 34, 55, 0.82);
+                border: 1px solid #23405d;
+                border-radius: 11px;
+                padding: 10px 12px;
+                font-size: 13px;
+                font-weight: 700;
+                text-align: left;
+            }
+            QToolButton#sectionToggle:hover { background: rgba(26, 48, 77, 0.92); }
+            QFrame#collapsibleContent {
+                background: transparent;
+                border: none;
             }
             QComboBox, QListWidget, QSlider, QCheckBox { color: #eaf2fb; }
             QComboBox, QListWidget {

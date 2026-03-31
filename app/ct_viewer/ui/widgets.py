@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import QLabel, QSlider, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QLabel, QSizePolicy, QSlider, QToolButton, QVBoxLayout, QWidget
 
 from .models import ORIENTATION_TITLES, clamp
 
@@ -156,3 +156,40 @@ class SliceView(QWidget):
         new_value = clamp(self.slider.value() + step, self.slider.minimum(), self.slider.maximum())
         if new_value != self.slider.value():
             self.slider.setValue(new_value)
+
+
+class CollapsibleSection(QWidget):
+    def __init__(self, title: str, expanded: bool = False) -> None:
+        super().__init__()
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName("sectionToggle")
+        self.toggle_button.setText(title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(expanded)
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+        self.content_frame = QFrame()
+        self.content_frame.setObjectName("collapsibleContent")
+        self.content_frame.setVisible(expanded)
+        self.content_layout = QVBoxLayout(self.content_frame)
+        self.content_layout.setContentsMargins(0, 8, 0, 0)
+        self.content_layout.setSpacing(10)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.toggle_button)
+        layout.addWidget(self.content_frame)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self.content_frame.setVisible(checked)
+
+    def addWidget(self, widget: QWidget) -> None:
+        self.content_layout.addWidget(widget)
+
+    def addLayout(self, layout: QVBoxLayout) -> None:
+        self.content_layout.addLayout(layout)

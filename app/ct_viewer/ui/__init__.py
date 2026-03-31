@@ -20,7 +20,7 @@ from .rendering import (
     physical_display_size,
     qimage_from_rgba,
 )
-from .widgets import SliceCanvas, SliceView
+from .widgets import CollapsibleSection, SliceCanvas, SliceView
 
 __all__ = [
     "CTVolume",
@@ -47,4 +47,5 @@ __all__ = [
     "qimage_from_rgba",
     "SliceCanvas",
     "SliceView",
+    "CollapsibleSection",
 ]
