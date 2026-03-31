@@ -3,20 +3,30 @@ import os
 import time
 from datetime import datetime
 
-# Updated Imports for PyQt6
+# 🔥 CRITICAL: Must come BEFORE any QApplication usage
+from PyQt6.QtCore import Qt
+from PyQt6 import QtCore
+
+QtCore.QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+
+# 🔥 Force WebEngine initialization early
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+# ---------------- UI Imports ----------------
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QFileDialog,
     QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QTextEdit, QHeaderView, QSplashScreen
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QPixmap, QColor
 
 # Importing your existing modules (Unchanged)
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometryV4 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
-from visualizerV3 import visualize_surgical_plan
+from geometry import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from visualizerV5 import visualize_surgical_plan
 
 # ---------- REAL TIME TERMINAL STREAM ----------
 class LogStream(QObject):
@@ -30,20 +40,6 @@ class LogStream(QObject):
 
     def flush(self):
         pass
-
-# ---------- VISUALIZER THREAD ----------
-class VisualizerWorker(QThread):
-    def __init__(self, verts, faces, results):
-        super().__init__()
-        self.verts = verts
-        self.faces = faces
-        self.results = results
-
-    def run(self):
-        try:
-            visualize_surgical_plan(self.verts, self.faces, self.results)
-        except Exception as e:
-            print(f"VISUALIZER ERROR: {e}")
 
 # ---------- PIPELINE WORKER THREAD ----------
 class Worker(QThread):
@@ -108,14 +104,14 @@ class GUI(QWidget):
         sys.stderr = self.stream
 
     def initUI(self):
-        self.setWindowTitle("Pedicle Screw Planning System Pro - V2.0")
+        self.setWindowTitle("Automatic Pedicle Screw Planning System - V5.0")
         self.setGeometry(100, 100, 1200, 800)
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        title = QLabel("GEOMETRY BASED PEDICLE SCREW PLANNING SYSTEM")
+        title = QLabel("AUTOMATIC PEDICLE SCREW PLANNING SYSTEM")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
         # Qt.AlignCenter -> Qt.AlignmentFlag.AlignCenter
         title.setAlignment(Qt.AlignmentFlag.AlignCenter) 
@@ -263,8 +259,16 @@ class GUI(QWidget):
     def visualize(self):
         if self.results:
             print("SYSTEM: Initializing 3D Surgical Visualization Engine...")
-            self.viz_thread = VisualizerWorker(self.verts, self.faces, self.results)
-            self.viz_thread.start()
+
+            try:
+                fig, show = visualize_surgical_plan(
+                    self.verts,
+                    self.faces,
+                    self.results
+                )
+                show()   # 🔥 IMPORTANT
+            except Exception as e:
+                print(f"VISUALIZER ERROR: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
