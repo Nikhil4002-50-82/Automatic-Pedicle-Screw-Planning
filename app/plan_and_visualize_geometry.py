@@ -9,7 +9,7 @@ def plan_and_visualize_geometry():
     data_dir = os.path.join(os.path.dirname(__file__), "data")
     source_txt = os.path.join(data_dir, "source.txt")
     with open(source_txt, "r") as f:
-        segmented_file = f.readline().strip()
+        segmented_file = f.readline().strip().strip('"').strip("'")
     print(f"Running geometry_2.py (L5-optimized) planning and visualization on: {segmented_file}")
     vertsWorld, faces = build_mesh_from_single_vertebra(segmented_file)
     results = run_planner(segmented_file)

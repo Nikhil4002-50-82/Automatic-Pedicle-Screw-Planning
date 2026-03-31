@@ -1,4 +1,5 @@
 import concurrent.futures
+from pathlib import Path
 
 # Top-level function for multiprocessing
 def angle_eval(args):
@@ -159,6 +160,105 @@ def build_mesh_from_single_vertebra(segmented_file=None, data=None, affine=None,
     vertsWorld = nib.affines.apply_affine(affine, verts)
     print(f"[Mesh] Mesh built: {len(verts)} vertices, {len(faces)} faces")
     return vertsWorld, faces
+
+
+def _full_spine_candidate_paths(segmented_file):
+    """Return likely companion L1-L5 segmentation files for an L5-only input."""
+    source_path = Path(segmented_file)
+    candidates = []
+
+    filename = source_path.name
+    if "_segmented_vertebrae_L5" in filename:
+        candidates.append(source_path.with_name(filename.replace(
+            "_segmented_vertebrae_L5",
+            "_segmented_vertebrae_L1_vertebrae_L5",
+        )))
+
+    prefix, marker, _ = filename.partition("_segmented_vertebrae_")
+    if marker:
+        candidates.extend(
+            sorted(
+                source_path.parent.glob(f"{prefix}_segmented_vertebrae_L1_vertebrae_L5.nii*")
+            )
+        )
+
+    unique_candidates = []
+    seen = set()
+    source_resolved = source_path.resolve()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved == source_resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        unique_candidates.append(candidate)
+
+    return unique_candidates
+
+
+def _resolve_visualization_mask(segmented_file, seg, affine):
+    """
+    Choose the visualization mask source.
+    Planning always uses the original L5 segmentation; visualization prefers
+    the full L1-L5 mask when it is already present or when a companion file exists.
+    """
+    nonzero_labels = np.unique(seg[seg > 0])
+    if nonzero_labels.size > 1:
+        print("[Runner] Visualization source: current file already contains multiple vertebra labels.")
+        return segmented_file, seg > 0, affine
+
+    for candidate in _full_spine_candidate_paths(segmented_file):
+        if not candidate.exists():
+            continue
+        print(f"[Runner] Visualization source: using companion full-spine mask: {candidate}")
+        vis_seg, _, vis_affine = loadNifti(str(candidate))
+        return str(candidate), vis_seg > 0, vis_affine
+
+    print("[Runner] Visualization source: no companion full-spine mask found. Falling back to L5-only mask.")
+    return segmented_file, seg > 0, affine
+
+
+def _crop_planning_mask(mask, affine, spacing, padding_mm=80.0, min_padding_voxels=8):
+    """
+    Crop the L5 planning mask to a padded bounding box.
+
+    The mask is reduced to speed up distance transform / PCA / raycasting,
+    while the affine is shifted so world coordinates remain unchanged.
+    """
+    import nibabel as nib
+
+    mask = np.asarray(mask, dtype=bool)
+    if not np.any(mask):
+        return mask, affine
+
+    coords = np.argwhere(mask)
+    min_idx = coords.min(axis=0)
+    max_idx = coords.max(axis=0)
+
+    spacing_xyz = np.asarray(spacing[:3], dtype=float)
+    spacing_xyz = np.where(spacing_xyz > 0, spacing_xyz, 1.0)
+    padding_vox = np.maximum(
+        np.ceil(float(padding_mm) / spacing_xyz).astype(int),
+        int(min_padding_voxels),
+    )
+
+    start = np.maximum(min_idx - padding_vox, 0)
+    stop = np.minimum(max_idx + padding_vox + 1, np.asarray(mask.shape, dtype=int))
+
+    slices = tuple(slice(int(start[i]), int(stop[i])) for i in range(3))
+    cropped_mask = mask[slices]
+
+    cropped_affine = np.array(affine, dtype=float, copy=True)
+    cropped_affine[:3, 3] = nib.affines.apply_affine(affine, start)
+
+    print(
+        "[Runner] Planning crop: "
+        f"shape {tuple(mask.shape)} -> {tuple(cropped_mask.shape)}, "
+        f"pad={padding_mm:.1f}mm"
+    )
+    return cropped_mask, cropped_affine
 
 
 def measure_pedicle_dimensions(center, axes, dist, mask, affine):
@@ -324,7 +424,7 @@ def plan_and_visualize_l5():
         sys.exit(1)
 
     with open(source_txt, "r") as f:
-        segmented_file = f.readline().strip()
+        segmented_file = f.readline().strip().strip('"').strip("'")
 
     print(f"[Runner] Segmented file: {segmented_file}")
 
@@ -381,17 +481,29 @@ def plan_and_visualize_l5():
     name = labelMap.get(labelVal, str(labelVal))
     print(f"[Runner] Found segment: label={labelVal} → {name}")
 
-    # --- Build mesh for visualization from the validated component ---
+    # --- Build visualization mesh ---
+    # Planning stays L5-only; visualization can use the full L1-L5 mask when available.
+    print("[Runner] Resolving visualization mask...")
+    vis_volume_path, vis_mask, vis_affine = _resolve_visualization_mask(
+        segmented_file,
+        seg,
+        affine,
+    )
+    print("[Runner] Building visualization mesh...")
     try:
         vertsWorld, faces = build_mesh_from_single_vertebra(
-            segmented_file=segmented_file,
-            data=mask,
-            affine=affine,
-            mask_name=name,
+            segmented_file=vis_volume_path,
+            data=vis_mask,
+            affine=vis_affine,
+            mask_name=f"VisualizationMask-{name}",
         )
     except ValueError as exc:
         print(f"[Runner] ERROR: {exc}")
         sys.exit(1)
+
+    # --- Crop the planning volume only ---
+    # This keeps all analytical steps on a much smaller grid without changing world coordinates.
+    mask, affine = _crop_planning_mask(mask, affine, spacing, padding_mm=80.0)
 
     # --- Compute robust L5 anatomical frame ---
     from analytical_geometry import computeStableFrameL5

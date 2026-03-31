@@ -306,7 +306,7 @@ def plan_and_visualize_l5():
         sys.exit(1)
 
     with open(source_txt, "r") as f:
-        segmented_file = f.readline().strip()
+        segmented_file = f.readline().strip().strip('"').strip("'")
 
     print(f"[Runner] Segmented file: {segmented_file}")
 

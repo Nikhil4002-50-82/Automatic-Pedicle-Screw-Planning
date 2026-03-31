@@ -749,7 +749,7 @@ def build_visualization(
             direction="right",
             showactive=False,
             x=0.01,
-            y=1.065,
+            y=1.03,
             xanchor="left",
             yanchor="top",
             pad=dict(r=10, t=8),
@@ -775,7 +775,7 @@ def build_visualization(
             direction="right",
             showactive=False,
             x=0.35,
-            y=1.065,
+            y=1.03,
             xanchor="left",
             yanchor="top",
             pad=dict(r=10, t=8),
@@ -802,12 +802,12 @@ def build_visualization(
     fig.update_layout(
         title=dict(
             text=title_text,
-            x=0.05,
-            xanchor="left",
+            x=0.5,
+            xanchor="center",
             y=0.995,
             yanchor="top",
-            pad=dict(t=12, b=24),
-            font=dict(size=18, color=style["title_font_color"]),
+            pad=dict(t=5, b=5),
+            font=dict(size=22, color=style["title_font_color"], family="Segoe UI Semibold, sans-serif"),
         ),
         template=style["template"],
         paper_bgcolor=style["paper_bgcolor"],
@@ -839,7 +839,8 @@ def build_visualization(
             camera=dict(eye=style["camera_eye"]),
         ),
         height=760,
-        margin=dict(l=0, r=0, t=120, b=54),
+        # Keep the scene full-height; the legend floats inside the plot instead of reserving a blank strip.
+        margin=dict(l=0, r=0, t=10, b=0),
         updatemenus=updatemenus,
         sliders=[
             dict(
@@ -856,7 +857,7 @@ def build_visualization(
                 borderwidth=1,
                 pad={"t": 0, "b": 0},
                 x=0.63,
-                y=0.035,
+                y=0.08,
                 len=0.33,
                 tickcolor=style["title_font_color"],
                 ticklen=6,
@@ -876,7 +877,7 @@ def build_visualization(
             font=dict(color=style["title_font_color"]),
             orientation="h",
             yanchor="bottom",
-            y=0.03,
+            y=0.02,
             xanchor="left",
             x=0.02,
         ),
@@ -887,6 +888,8 @@ def build_visualization(
             screw_mode_screws_vis=screw_mode_screws_vis,
             screw_mode_traj_vis=screw_mode_traj_vis,
             mesh_opacity=mesh_opacity,
+            initial_screw_mode="screws" if show_screw_meshes else "trajectories",
+            initial_bbox_visible=show_bounding_box,
         ),
         transition=dict(duration=0),
         uirevision="unified-visualizer",
@@ -909,9 +912,11 @@ def build_visualization(
 def _build_qt_window(fig, window_title):
     # Lazy load PyQt6 to avoid import overhead until visualization is needed
     from PyQt6.QtCore import Qt, QUrl
+    from PyQt6.QtCore import QTimer
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWidgets import (
         QApplication,
+        QButtonGroup,
         QFileDialog,
         QHBoxLayout,
         QLabel,
@@ -958,10 +963,28 @@ def _build_qt_window(fig, window_title):
     .legendtoggle {{
       cursor: pointer !important;
     }}
+    .modebar {{
+      background: rgba(8, 14, 24, 0.44) !important;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 10px;
+      padding: 4px;
+      backdrop-filter: blur(6px);
+    }}
+    .modebar-btn {{
+      border-radius: 8px !important;
+      transition: background-color 110ms ease, transform 110ms ease, opacity 110ms ease;
+    }}
+    .modebar-btn:hover {{
+      background: rgba(91, 243, 255, 0.18) !important;
+      transform: translateY(-1px);
+    }}
+    .modebar-btn.active {{
+      background: rgba(91, 243, 255, 0.26) !important;
+    }}
   </style>
 </head>
 <body>
-{pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%")}
+{pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%", config=dict(displayModeBar=True, displaylogo=False, scrollZoom=True, modeBarButtonsToAdd=["v1hovermode", "toggleSpikelines"]))}
 <script>
   document.addEventListener('DOMContentLoaded', function () {{
     function applyPointerCursor() {{
@@ -996,47 +1019,160 @@ def _build_qt_window(fig, window_title):
     layout.setSpacing(0)
     container.setStyleSheet(f"background-color: {paper_bg};")
 
-    control_bar = QHBoxLayout()
-    control_bar.setContentsMargins(12, 10, 12, 10)
-    control_bar.setSpacing(10)
+    # --- Custom dark panel for controls just below legend ---
+    panel_widget = QWidget()
+    panel_widget.setStyleSheet(
+        "background-color: rgba(16, 25, 38, 0.96);"
+        "border: 1px solid rgba(151, 164, 180, 0.22);"
+        "border-radius: 10px;"
+    )
+    panel_widget.setFixedHeight(60)
+    panel_layout = QHBoxLayout(panel_widget)
+    panel_layout.setContentsMargins(30, 2, 30, 2)
+    panel_layout.setSpacing(16)
+    panel_layout.addStretch(1)
 
     show_screws_button = QPushButton("Show Max Diameter")
     show_traj_button = QPushButton("Show Trajectories")
     show_bbox_button = QPushButton("Show Bounding Box")
     hide_bbox_button = QPushButton("Hide Bounding Box")
+    export_button = QPushButton("Export Image")
     opacity_label = QLabel(f"Mesh Opacity: {float(control_meta.get('mesh_opacity', 0.25)):.2f}")
-    opacity_label.setStyleSheet("color: #F7FAFC; padding-left: 12px;")
+    opacity_label.setStyleSheet("color: #F7FAFC; padding-left: 12px; font-weight: 600;")
     opacity_slider = QSlider(Qt.Orientation.Horizontal)
     opacity_slider.setRange(5, 100)
-    opacity_slider.setValue(int(round(float(control_meta.get("mesh_opacity", 0.25)) * 100)))
+    opacity_slider.setValue(int(round(float(control_meta.get('mesh_opacity', 0.25)) * 100)))
     opacity_slider.setFixedWidth(220)
+    opacity_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+    opacity_slider.setStyleSheet(
+        "QSlider::groove:horizontal {"
+        "  height: 8px;"
+        "  border-radius: 4px;"
+        "  background: rgba(120, 134, 156, 0.32);"
+        "}"
+        "QSlider::sub-page:horizontal {"
+        "  border-radius: 4px;"
+        "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4BD3FF, stop:1 #79F2FF);"
+        "}"
+        "QSlider::add-page:horizontal {"
+        "  border-radius: 4px;"
+        "  background: rgba(120, 134, 156, 0.24);"
+        "}"
+        "QSlider::handle:horizontal {"
+        "  width: 18px;"
+        "  margin: -6px 0;"
+        "  border-radius: 9px;"
+        "  border: 2px solid rgba(255,255,255,0.88);"
+        "  background: #F7FAFC;"
+        "}"
+        "QSlider::handle:horizontal:hover {"
+        "  background: #FFFFFF;"
+        "  border: 2px solid #79F2FF;"
+        "}"
+        "QSlider::handle:horizontal:pressed {"
+        "  background: #CFFAFE;"
+        "  border: 2px solid #22D3EE;"
+        "}"
+    )
+
+    button_style = (
+        "QPushButton {"
+        "  background-color: rgba(76, 99, 130, 0.72);"
+        "  color: #F7FAFC;"
+        "  border: 1px solid rgba(151, 164, 180, 0.18);"
+        "  padding: 8px 14px;"
+        "  border-radius: 7px;"
+        "  font-weight: 600;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: rgba(96, 125, 163, 0.95);"
+        "  border: 1px solid rgba(123, 229, 255, 0.55);"
+        "}"
+        "QPushButton:pressed {"
+        "  background-color: rgba(55, 75, 104, 0.98);"
+        "  padding-top: 9px;"
+        "  padding-bottom: 7px;"
+        "}"
+        "QPushButton:checked {"
+        "  background-color: rgba(54, 188, 229, 0.92);"
+        "  color: #06121D;"
+        "  border: 1px solid rgba(186, 248, 255, 0.92);"
+        "}"
+        "QPushButton:checked:hover {"
+        "  background-color: rgba(90, 214, 245, 0.98);"
+        "}"
+        "QPushButton:disabled {"
+        "  background-color: rgba(51, 65, 85, 0.88);"
+        "  color: #94A3B8;"
+        "  border: 1px solid rgba(100, 116, 139, 0.2);"
+        "}"
+    )
+    export_button_style = (
+        "QPushButton {"
+        "  background-color: rgba(30, 41, 59, 0.92);"
+        "  color: #F7FAFC;"
+        "  border: 1px solid rgba(148, 163, 184, 0.28);"
+        "  padding: 8px 14px;"
+        "  border-radius: 7px;"
+        "  font-weight: 600;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: rgba(45, 62, 87, 0.98);"
+        "  border: 1px solid rgba(123, 229, 255, 0.45);"
+        "}"
+        "QPushButton:pressed {"
+        "  background-color: rgba(18, 27, 42, 1.0);"
+        "  padding-top: 9px;"
+        "  padding-bottom: 7px;"
+        "}"
+        "QPushButton:disabled {"
+        "  color: #94A3B8;"
+        "  background-color: rgba(30, 41, 59, 0.55);"
+        "  border: 1px solid rgba(100, 116, 139, 0.18);"
+        "}"
+    )
+
+    screw_mode_buttons = QButtonGroup(panel_widget)
+    screw_mode_buttons.setExclusive(True)
+    bbox_buttons = QButtonGroup(panel_widget)
+    bbox_buttons.setExclusive(True)
 
     for button in (show_screws_button, show_traj_button, show_bbox_button, hide_bbox_button):
-        button.setStyleSheet(
-            "QPushButton { background-color: #4C6382; color: #F7FAFC; border: 0; "
-            "padding: 8px 14px; border-radius: 4px; } "
-            "QPushButton:disabled { background-color: #334155; color: #94A3B8; }"
-        )
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet(button_style)
 
-    control_bar.addWidget(show_screws_button)
-    control_bar.addWidget(show_traj_button)
-    control_bar.addSpacing(18)
-    control_bar.addWidget(show_bbox_button)
-    control_bar.addWidget(hide_bbox_button)
-    control_bar.addStretch(1)
-    control_bar.addWidget(opacity_label)
-    control_bar.addWidget(opacity_slider)
-    layout.addLayout(control_bar)
+    export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+    export_button.setStyleSheet(export_button_style)
+
+    screw_mode_buttons.addButton(show_screws_button)
+    screw_mode_buttons.addButton(show_traj_button)
+    bbox_buttons.addButton(show_bbox_button)
+    bbox_buttons.addButton(hide_bbox_button)
+
+    initial_screw_mode = control_meta.get("initial_screw_mode", "screws")
+    show_screws_button.setChecked(initial_screw_mode != "trajectories")
+    show_traj_button.setChecked(initial_screw_mode == "trajectories")
+
+    initial_bbox_visible = bool(control_meta.get("initial_bbox_visible", True))
+    show_bbox_button.setChecked(initial_bbox_visible)
+    hide_bbox_button.setChecked(not initial_bbox_visible)
+
+    panel_layout.addWidget(show_screws_button)
+    panel_layout.addWidget(show_traj_button)
+    panel_layout.addWidget(show_bbox_button)
+    panel_layout.addWidget(hide_bbox_button)
+    panel_layout.addWidget(opacity_label)
+    panel_layout.addWidget(opacity_slider)
+    panel_layout.addStretch(1)
 
     view = QWebEngineView()
     view.load(QUrl.fromLocalFile(html_path))
     layout.addWidget(view)
-
-    export_button = QPushButton("Export Image")
-    export_button.setStyleSheet(
-        "QPushButton { background-color: #1E293B; color: #F7FAFC; border: 0; "
-        "padding: 8px 14px; } QPushButton:disabled { color: #94A3B8; }"
-    )
+    layout.setStretchFactor(view, 1)  # Make plot expand to fill available space
+    # Insert the panel widget just below the plot title/legend, above the plot content
+    layout.insertWidget(1, panel_widget)
+    layout.setStretchFactor(panel_widget, 0)  # Keep panel at fixed height
     layout.addWidget(export_button)
 
     interactive_controls = [
@@ -1075,6 +1211,14 @@ def _build_qt_window(fig, window_title):
             }})();
             """
         )
+
+    pending_opacity_value = {"value": float(control_meta.get("mesh_opacity", 0.25))}
+    opacity_update_timer = QTimer(panel_widget)
+    opacity_update_timer.setSingleShot(True)
+    opacity_update_timer.setInterval(60)
+    opacity_update_timer.timeout.connect(
+        lambda: set_mesh_opacity(pending_opacity_value["value"])
+    )
 
     def export_image():
         file_path, _ = QFileDialog.getSaveFileName(
@@ -1124,7 +1268,14 @@ def _build_qt_window(fig, window_title):
     opacity_slider.valueChanged.connect(
         lambda value: (
             opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}"),
-            set_mesh_opacity(value / 100.0),
+            pending_opacity_value.__setitem__("value", value / 100.0),
+            opacity_update_timer.start(),
+        )
+    )
+    opacity_slider.sliderReleased.connect(
+        lambda: (
+            opacity_update_timer.stop(),
+            set_mesh_opacity(opacity_slider.value() / 100.0),
         )
     )
     view.loadFinished.connect(on_load_finished)
