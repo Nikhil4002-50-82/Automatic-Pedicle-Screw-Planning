@@ -20,6 +20,7 @@ from .rendering import (
     physical_display_size,
     qimage_from_rgba,
 )
+from .mask_viz import MaskVisualizationPane, build_mask_preview_figure
 from .widgets import CollapsibleSection, SliceCanvas, SliceView
 
 __all__ = [
@@ -45,6 +46,8 @@ __all__ = [
     "orientation_labels",
     "physical_display_size",
     "qimage_from_rgba",
+    "MaskVisualizationPane",
+    "build_mask_preview_figure",
     "SliceCanvas",
     "SliceView",
     "CollapsibleSection",

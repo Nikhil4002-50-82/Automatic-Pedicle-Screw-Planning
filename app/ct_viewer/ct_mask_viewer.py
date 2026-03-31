@@ -37,10 +37,15 @@ from scipy import ndimage
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from ct_viewer.ui import io as ct_io  # noqa: E402
-from ct_viewer.ui import rendering as ct_rendering  # noqa: E402
-from ct_viewer.ui import widgets as ct_widgets  # noqa: E402
+    from ct_viewer.ui import io as ct_io  # noqa: E402
+    from ct_viewer.ui import mask_viz as ct_mask_viz  # noqa: E402
+    from ct_viewer.ui import rendering as ct_rendering  # noqa: E402
+    from ct_viewer.ui import widgets as ct_widgets  # noqa: E402
+else:
+    from .ui import io as ct_io  # noqa: E402
+    from .ui import mask_viz as ct_mask_viz  # noqa: E402
+    from .ui import rendering as ct_rendering  # noqa: E402
+    from .ui import widgets as ct_widgets  # noqa: E402
 
 try:
     import SimpleITK as sitk
@@ -533,7 +538,7 @@ class CTMaskViewer(QMainWindow):
 
         splitter.addWidget(self._build_control_panel())
         splitter.addWidget(self._build_view_panel())
-        splitter.setSizes([360, 1260])
+        splitter.setSizes([300, 1320])
 
         outer_layout.addWidget(splitter)
         self.setCentralWidget(central)
@@ -545,8 +550,8 @@ class CTMaskViewer(QMainWindow):
     def _build_control_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("sidePanel")
-        panel.setMinimumWidth(320)
-        panel.setMaximumWidth(420)
+        panel.setMinimumWidth(280)
+        panel.setMaximumWidth(360)
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -687,10 +692,21 @@ class CTMaskViewer(QMainWindow):
             "coronal": ct_widgets.SliceView("coronal"),
             "sagittal": ct_widgets.SliceView("sagittal"),
         }
+        self.mask_viz = ct_mask_viz.MaskVisualizationPane()
+
+        self.views["axial"].sliceChanged.connect(self.on_slice_changed)
+        self.views["axial"].crosshairRequested.connect(self.on_view_clicked)
+
+        axial_column = QSplitter(Qt.Orientation.Vertical)
+        axial_column.setChildrenCollapsible(False)
+        axial_column.addWidget(self.views["axial"])
+        axial_column.addWidget(self.mask_viz)
+        axial_column.setSizes([520, 520])
 
         views_layout = QHBoxLayout()
         views_layout.setSpacing(14)
-        for orientation in ("axial", "coronal", "sagittal"):
+        views_layout.addWidget(axial_column, 1)
+        for orientation in ("coronal", "sagittal"):
             view = self.views[orientation]
             view.sliceChanged.connect(self.on_slice_changed)
             view.crosshairRequested.connect(self.on_view_clicked)
@@ -799,7 +815,7 @@ class CTMaskViewer(QMainWindow):
                 padding: 8px 14px;
                 font-size: 13px;
                 font-weight: 600;
-                text-align: left;
+                text-align: center;
             }
             QPushButton:hover { background: #1c4067; }
             QPushButton:pressed { background: #122a43; }
@@ -816,7 +832,7 @@ class CTMaskViewer(QMainWindow):
                 padding: 10px 12px;
                 font-size: 13px;
                 font-weight: 700;
-                text-align: left;
+                text-align: center;
             }
             QToolButton#sectionToggle:hover { background: rgba(26, 48, 77, 0.92); }
             QFrame#collapsibleContent {
@@ -856,6 +872,8 @@ class CTMaskViewer(QMainWindow):
         self.cursor_info_label.setText("Voxel: -, -, -    HU: -")
         for view in self.views.values():
             view.clear_view()
+        if hasattr(self, "mask_viz"):
+            self.mask_viz.clear_view()
         self.mask_list.clear()
         self.window_center_slider.setEnabled(False)
         self.window_width_slider.setEnabled(False)
@@ -966,6 +984,7 @@ class CTMaskViewer(QMainWindow):
         self.refresh_mask_list()
         self.update_volume_info()
         self.render_all_views()
+        self.refresh_mask_visualization()
         self.statusBar().showMessage("Cleared all masks.", 4000)
 
     def _on_ct_loaded(self, volume: CTVolume) -> None:
@@ -984,6 +1003,7 @@ class CTMaskViewer(QMainWindow):
         self.refresh_mask_list()
         self.update_volume_info()
         self.render_all_views()
+        self.refresh_mask_visualization()
         self._set_loading_state(f"Loaded CT: {Path(volume.path).name}", busy=False)
 
         if volume.summary.is_constant:
@@ -1004,6 +1024,7 @@ class CTMaskViewer(QMainWindow):
             self.refresh_mask_list()
             self.update_volume_info()
             self.render_all_views()
+            self.refresh_mask_visualization()
             self._set_loading_state(f"Loaded {len(result.layers)} mask(s).", busy=False)
         else:
             self._set_loading_state("No masks were loaded.", busy=False)
@@ -1126,6 +1147,7 @@ class CTMaskViewer(QMainWindow):
         self.mask_layers[row].visible = item.checkState() == Qt.CheckState.Checked
         self.mask_slice_cache.clear()
         self.render_all_views()
+        self.refresh_mask_visualization()
 
     def apply_window_preset(self, preset_name: str) -> None:
         if self.ct_volume is None or self._window_control_lock:
@@ -1210,6 +1232,12 @@ class CTMaskViewer(QMainWindow):
             view.set_footer(f"Slice {slice_index + 1} / {self.ct_volume.shape[axis]}")
 
         self._update_cursor_info()
+
+    def refresh_mask_visualization(self) -> None:
+        if not hasattr(self, "mask_viz"):
+            return
+
+        self.mask_viz.set_data(self.ct_volume, self.mask_layers)
 
     def _render_view(self, orientation: str, center: int, width: int, opacity: float) -> tuple[QPixmap, tuple[int, int]]:
         ct_slice = self._get_ct_slice(orientation)
