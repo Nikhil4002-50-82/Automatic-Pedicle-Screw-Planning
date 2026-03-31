@@ -35,6 +35,13 @@ from PyQt6.QtWidgets import (
 )
 from scipy import ndimage
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from ct_viewer.ui import io as ct_io  # noqa: E402
+from ct_viewer.ui import rendering as ct_rendering  # noqa: E402
+from ct_viewer.ui import widgets as ct_widgets  # noqa: E402
+
 try:
     import SimpleITK as sitk
 except ImportError:  # pragma: no cover - optional dependency
@@ -462,15 +469,7 @@ class CTLoadWorker(QObject):
 
     def run(self) -> None:
         try:
-            image = load_spatial_image(self.path)
-            summary = summarize_volume(image)
-            payload = CTVolume(
-                path=self.path,
-                image=image,
-                shape=tuple(int(value) for value in image.shape[:3]),
-                zooms=tuple(float(value) for value in image.header.get_zooms()[:3]),
-                summary=summary,
-            )
+            payload = ct_io.load_ct_volume(self.path)
         except Exception as exc:  # pragma: no cover - UI error path
             self.failed.emit("Could not load CT", str(exc))
             return
@@ -489,34 +488,13 @@ class MaskLoadWorker(QObject):
         self.start_index = start_index
 
     def run(self) -> None:
-        layers: list[MaskLayer] = []
-        warnings: list[str] = []
+        try:
+            result = ct_io.load_mask_layers(self.paths, self.ct_image, self.start_index)
+        except Exception as exc:  # pragma: no cover - UI error path
+            self.failed.emit("Could not load masks", str(exc))
+            return
 
-        for index, path in enumerate(self.paths, start=self.start_index):
-            try:
-                mask_image = load_nifti_image(path)
-                if mask_image.shape != self.ct_image.shape or not np.allclose(
-                    mask_image.affine,
-                    self.ct_image.affine,
-                    atol=1e-3,
-                ):
-                    mask_image = resample_from_to(mask_image, self.ct_image, order=0)
-                    warnings.append(f"{Path(path).name}: resampled to match CT geometry.")
-
-                layers.append(
-                    MaskLayer(
-                        name=Path(path).name,
-                        path=path,
-                        image=mask_image,
-                        color=MASK_COLORS[index % len(MASK_COLORS)],
-                        visible=True,
-                        voxel_count=None,
-                    )
-                )
-            except Exception as exc:  # pragma: no cover - UI error path
-                warnings.append(f"{Path(path).name}: {exc}")
-
-        self.finished.emit(MaskLoadResult(layers=layers, warnings=warnings))
+        self.finished.emit(result)
 
 
 class CTMaskViewer(QMainWindow):
@@ -705,9 +683,9 @@ class CTMaskViewer(QMainWindow):
         self.cursor_info_label.setObjectName("cursorInfo")
 
         self.views = {
-            "axial": SliceView("axial"),
-            "coronal": SliceView("coronal"),
-            "sagittal": SliceView("sagittal"),
+            "axial": ct_widgets.SliceView("axial"),
+            "coronal": ct_widgets.SliceView("coronal"),
+            "sagittal": ct_widgets.SliceView("sagittal"),
         }
 
         views_layout = QHBoxLayout()
@@ -1220,17 +1198,17 @@ class CTMaskViewer(QMainWindow):
 
     def _render_view(self, orientation: str, center: int, width: int, opacity: float) -> tuple[QPixmap, tuple[int, int]]:
         ct_slice = self._get_ct_slice(orientation)
-        rgba = grayscale_rgba(ct_slice, center, width)
+        rgba = ct_rendering.grayscale_rgba(ct_slice, center, width)
 
         for layer_index, layer in enumerate(self.mask_layers):
             if not layer.visible:
                 continue
             mask_slice = self._get_mask_slice(layer_index, layer, orientation)
-            blend_mask(rgba, mask_slice, layer.color, opacity)
+            ct_rendering.blend_mask(rgba, mask_slice, layer.color, opacity)
 
-        image = qimage_from_rgba(rgba)
+        image = ct_rendering.qimage_from_rgba(rgba)
         if self.crosshair_checkbox.isChecked():
-            cross_x, cross_y = crosshair_position(self.ct_volume.shape, orientation, self.current_indices)
+            cross_x, cross_y = ct_rendering.crosshair_position(self.ct_volume.shape, orientation, self.current_indices)
             painter = QPainter(image)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             pen = QPen(QColor("#44d7ff"))
@@ -1238,7 +1216,7 @@ class CTMaskViewer(QMainWindow):
             painter.setPen(pen)
             painter.drawLine(cross_x, 0, cross_x, image.height() - 1)
             painter.drawLine(0, cross_y, image.width() - 1, cross_y)
-            left_label, right_label, top_label, bottom_label = orientation_labels(orientation)
+            left_label, right_label, top_label, bottom_label = ct_rendering.orientation_labels(orientation)
             painter.setPen(QPen(QColor("#f7fbff")))
             painter.drawText(12, image.height() // 2, left_label)
             painter.drawText(image.width() - 22, image.height() // 2, right_label)
@@ -1247,8 +1225,8 @@ class CTMaskViewer(QMainWindow):
             painter.end()
 
         pixmap = QPixmap.fromImage(image)
-        width_spacing, height_spacing = display_spacing(self.ct_zooms, orientation)
-        target_width, target_height = physical_display_size(image.width(), image.height(), width_spacing, height_spacing)
+        width_spacing, height_spacing = ct_rendering.display_spacing(self.ct_zooms, orientation)
+        target_width, target_height = ct_rendering.physical_display_size(image.width(), image.height(), width_spacing, height_spacing)
         if target_width != image.width() or target_height != image.height():
             pixmap = pixmap.scaled(
                 target_width,
@@ -1267,7 +1245,7 @@ class CTMaskViewer(QMainWindow):
         if cached is not None:
             return cached
 
-        ct_slice = extract_slice(self.ct_volume.image, orientation, self.current_indices)
+        ct_slice = ct_rendering.extract_slice(self.ct_volume.image, orientation, self.current_indices)
         if not np.isfinite(ct_slice).all():
             ct_slice = np.nan_to_num(ct_slice, copy=False)
 
@@ -1282,7 +1260,7 @@ class CTMaskViewer(QMainWindow):
         if cached is not None:
             return cached
 
-        mask_slice = extract_slice(layer.image, orientation, self.current_indices) != 0
+        mask_slice = ct_rendering.extract_slice(layer.image, orientation, self.current_indices) != 0
         if len(self.mask_slice_cache) > 18:
             self.mask_slice_cache.clear()
         self.mask_slice_cache[cache_key] = mask_slice
