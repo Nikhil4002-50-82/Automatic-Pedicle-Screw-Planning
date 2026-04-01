@@ -9,7 +9,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 from nibabel.processing import resample_from_to
-from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, pyqtSignal, qInstallMessageHandler
 from PyQt6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
@@ -52,6 +52,29 @@ try:
     import SimpleITK as sitk
 except ImportError:  # pragma: no cover - optional dependency
     sitk = None
+
+
+_QT_MESSAGE_FILTER_INSTALLED = False
+
+
+def _install_qt_message_filter() -> None:
+    global _QT_MESSAGE_FILTER_INSTALLED
+    if _QT_MESSAGE_FILTER_INSTALLED:
+        return
+
+    def _handler(_mode, _context, message) -> None:
+        text = str(message)
+        if text.startswith("QFont::setPointSize: Point size <= 0 (-1)"):
+            return
+        if text.startswith("QFontDatabase: Cannot find font directory"):
+            return
+        if text.startswith("js: Canvas2D: Multiple readback operations using getImageData"):
+            return
+        sys.__stderr__.write(text + "\n")
+        sys.__stderr__.flush()
+
+    qInstallMessageHandler(_handler)
+    _QT_MESSAGE_FILTER_INSTALLED = True
 
 
 WINDOW_PRESETS = {
@@ -527,6 +550,7 @@ class MaskPreviewWorker(QObject):
 class CTMaskViewer(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        _install_qt_message_filter()
         self.ct_volume: CTVolume | None = None
         self.ct_zooms = (1.0, 1.0, 1.0)
         self.mask_layers: list[MaskLayer] = []
@@ -1057,6 +1081,7 @@ class CTMaskViewer(QMainWindow):
         if result.layers:
             self.mask_layers.extend(result.layers)
             self.mask_slice_cache.clear()
+            self._focus_views_on_masks(result.layers)
             self.refresh_mask_list()
             self.update_volume_info()
             self.render_all_views()
@@ -1071,6 +1096,33 @@ class CTMaskViewer(QMainWindow):
     def _on_worker_failed(self, title: str, message: str) -> None:
         self._set_loading_state("Load failed.", busy=False)
         self._show_error(title, message)
+
+    def _focus_views_on_masks(self, layers: list[MaskLayer]) -> None:
+        if self.ct_volume is None or not layers:
+            return
+
+        mask_union = np.zeros(self.ct_volume.shape, dtype=bool)
+        for layer in layers:
+            mask_union |= np.asarray(layer.image.dataobj) != 0
+
+        if not np.any(mask_union):
+            return
+
+        center = ndimage.center_of_mass(mask_union.astype(np.uint8, copy=False))
+        target = [
+            clamp(int(round(center[0])), 0, self.ct_volume.shape[0] - 1),
+            clamp(int(round(center[1])), 0, self.ct_volume.shape[1] - 1),
+            clamp(int(round(center[2])), 0, self.ct_volume.shape[2] - 1),
+        ]
+
+        if not mask_union[tuple(target)]:
+            coords = np.argwhere(mask_union)
+            if coords.size == 0:
+                return
+            deltas = coords.astype(np.float32, copy=False) - np.asarray(center, dtype=np.float32)
+            target = coords[int(np.argmin(np.sum(deltas * deltas, axis=1)))].tolist()
+
+        self.current_indices = [int(value) for value in target]
 
     def _clear_ct_thread(self) -> None:
         self._ct_thread = None
@@ -1432,6 +1484,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args(sys.argv[1:])
+    _install_qt_message_filter()
     app = QApplication([sys.argv[0]])
     app.setApplicationName("CT and Segmentation Viewer")
     viewer = CTMaskViewer()

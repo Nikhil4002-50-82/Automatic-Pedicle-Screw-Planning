@@ -12,6 +12,11 @@ from PyQt6.QtWidgets import QFrame, QLabel, QSizePolicy, QStackedWidget, QVBoxLa
 from .models import CTVolume, MaskLayer
 
 try:
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+except ImportError:  # pragma: no cover - optional dependency
+    QWebEnginePage = None
+
+try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 except ImportError:  # pragma: no cover - optional dependency
     QWebEngineView = None
@@ -32,6 +37,14 @@ except ImportError:  # pragma: no cover - script-style fallback
     )
 
 _measure = None
+
+
+class _QuietPlotlyPage(QWebEnginePage if QWebEnginePage is not None else object):
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):  # type: ignore[override]
+        text = str(message)
+        if text.startswith("Canvas2D: Multiple readback operations using getImageData"):
+            return
+        return super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
 
 
 def _ensure_measure():
@@ -272,6 +285,8 @@ class MaskVisualizationPane(QFrame):
             try:
                 self._web_view = QWebEngineView()
                 self._web_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                if QWebEnginePage is not None:
+                    self._web_view.setPage(_QuietPlotlyPage(self._web_view))
                 self._web_view.loadFinished.connect(self._on_page_loaded)
                 self._web_view.load(QUrl.fromLocalFile(self._html_path))
             except Exception:  # pragma: no cover - headless or webengine bootstrap failure
