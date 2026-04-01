@@ -3,13 +3,10 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
-from nibabel.processing import resample_from_to
-from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, pyqtSignal, qInstallMessageHandler
+from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
@@ -34,7 +31,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from scipy import ndimage
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -42,515 +38,41 @@ if __package__ in {None, ""}:
     from ct_viewer.ui import mask_viz as ct_mask_viz  # noqa: E402
     from ct_viewer.ui import rendering as ct_rendering  # noqa: E402
     from ct_viewer.ui import widgets as ct_widgets  # noqa: E402
+    from ct_viewer.ui.focus import focus_indices_from_masks  # noqa: E402
+    from ct_viewer.ui.models import (  # noqa: E402
+        CTVolume,
+        MASK_COLORS,
+        MaskLayer,
+        MaskLoadResult,
+        ORIENTATION_TITLES,
+        SLICE_AXES,
+        WINDOW_PRESETS,
+        clamp,
+    )
+    from ct_viewer.ui.runtime import install_qt_message_filter  # noqa: E402
+    from ct_viewer.ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker  # noqa: E402
 else:
     from .ui import io as ct_io  # noqa: E402
     from .ui import mask_viz as ct_mask_viz  # noqa: E402
     from .ui import rendering as ct_rendering  # noqa: E402
     from .ui import widgets as ct_widgets  # noqa: E402
-
-try:
-    import SimpleITK as sitk
-except ImportError:  # pragma: no cover - optional dependency
-    sitk = None
-
-
-_QT_MESSAGE_FILTER_INSTALLED = False
-
-
-def _install_qt_message_filter() -> None:
-    global _QT_MESSAGE_FILTER_INSTALLED
-    if _QT_MESSAGE_FILTER_INSTALLED:
-        return
-
-    def _handler(_mode, _context, message) -> None:
-        text = str(message)
-        if text.startswith("QFont::setPointSize: Point size <= 0 (-1)"):
-            return
-        if text.startswith("QFontDatabase: Cannot find font directory"):
-            return
-        if text.startswith("js: Canvas2D: Multiple readback operations using getImageData"):
-            return
-        sys.__stderr__.write(text + "\n")
-        sys.__stderr__.flush()
-
-    qInstallMessageHandler(_handler)
-    _QT_MESSAGE_FILTER_INSTALLED = True
-
-
-WINDOW_PRESETS = {
-    "Auto": None,
-    "Bone": (300, 1500),
-    "Soft Tissue": (50, 400),
-    "Lung": (-600, 1500),
-    "Custom": None,
-}
-
-MASK_COLORS = [
-    (0, 208, 132),
-    (255, 140, 92),
-    (91, 141, 239),
-    (255, 196, 61),
-    (188, 118, 255),
-    (255, 87, 124),
-    (43, 214, 255),
-    (171, 235, 82),
-]
-
-ORIENTATION_TITLES = {
-    "axial": "Axial",
-    "coronal": "Coronal",
-    "sagittal": "Sagittal",
-}
-
-SLICE_AXES = {
-    "sagittal": 0,
-    "coronal": 1,
-    "axial": 2,
-}
-
-
-@dataclass
-class MaskLayer:
-    name: str
-    path: str
-    image: nib.spatialimages.SpatialImage
-    color: tuple[int, int, int]
-    visible: bool = True
-    voxel_count: int | None = None
-
-
-@dataclass
-class VolumeSummary:
-    minimum: float
-    maximum: float
-    low_percentile: float
-    high_percentile: float
-    is_constant: bool
-
-
-@dataclass
-class CTVolume:
-    path: str
-    image: nib.spatialimages.SpatialImage
-    shape: tuple[int, int, int]
-    zooms: tuple[float, float, float]
-    summary: VolumeSummary
-
-
-@dataclass
-class MaskLoadResult:
-    layers: list[MaskLayer]
-    warnings: list[str]
-
-
-def clamp(value: int, lower: int, upper: int) -> int:
-    return max(lower, min(value, upper))
-
-
-def _is_nifti_path(path: str | Path) -> bool:
-    lower = str(path).lower()
-    return lower.endswith(".nii") or lower.endswith(".nii.gz")
-
-
-def _squeeze_to_3d(image: nib.spatialimages.SpatialImage) -> nib.spatialimages.SpatialImage:
-    squeezed = nib.squeeze_image(image)
-    if len(squeezed.shape) != 3:
-        if len(squeezed.shape) == 4:
-            volumes = nib.funcs.four_to_three(squeezed)
-            if volumes:
-                return volumes[0]
-        raise ValueError(f"Expected a 3D volume, got shape {squeezed.shape}")
-    return squeezed
-
-
-def load_nifti_image(path: str) -> nib.spatialimages.SpatialImage:
-    image = nib.load(path)
-    canonical = nib.as_closest_canonical(_squeeze_to_3d(image))
-    if len(canonical.shape) != 3:
-        raise ValueError(f"Expected a 3D volume, got shape {canonical.shape}")
-    return canonical
-
-
-def load_dicom_series(folder: str) -> nib.spatialimages.SpatialImage:
-    if sitk is None:
-        raise RuntimeError("SimpleITK is required to load DICOM CT series.")
-
-    source_folder = Path(folder)
-    if source_folder.is_file():
-        source_folder = source_folder.parent
-    if not source_folder.exists():
-        raise FileNotFoundError(f"DICOM source not found: {source_folder}")
-
-    reader = sitk.ImageSeriesReader()
-    series_ids = list(reader.GetGDCMSeriesIDs(str(source_folder)))
-    if not series_ids:
-        raise ValueError(f"No DICOM series were found in {source_folder}")
-
-    def series_size(series_id: str) -> int:
-        return len(reader.GetGDCMSeriesFileNames(str(source_folder), series_id))
-
-    series_id = max(series_ids, key=series_size)
-    file_names = reader.GetGDCMSeriesFileNames(str(source_folder), series_id)
-    if not file_names:
-        raise ValueError(f"No readable DICOM files were found in {source_folder}")
-
-    reader.SetFileNames(file_names)
-    image = reader.Execute()
-
-    array = sitk.GetArrayFromImage(image)
-    if array.ndim != 3:
-        raise ValueError(f"Expected a 3D DICOM series, got shape {array.shape}")
-    array = np.transpose(array, (2, 1, 0)).astype(np.float32, copy=False)
-
-    spacing = np.asarray(image.GetSpacing(), dtype=np.float32)
-    origin = np.asarray(image.GetOrigin(), dtype=np.float32)
-    direction = np.asarray(image.GetDirection(), dtype=np.float32).reshape(3, 3)
-
-    affine_lps = np.eye(4, dtype=np.float32)
-    affine_lps[:3, :3] = direction @ np.diag(spacing)
-    affine_lps[:3, 3] = origin
-
-    lps_to_ras = np.diag([-1.0, -1.0, 1.0, 1.0]).astype(np.float32)
-    affine_ras = lps_to_ras @ affine_lps
-
-    return nib.as_closest_canonical(nib.Nifti1Image(array, affine_ras))
-
-
-def load_spatial_image(path: str) -> nib.spatialimages.SpatialImage:
-    candidate = Path(path)
-    if candidate.is_dir():
-        return load_dicom_series(str(candidate))
-    if _is_nifti_path(candidate):
-        return load_nifti_image(str(candidate))
-
-    raise FileNotFoundError(f"Input CT not found: {path}")
-
-
-def summarize_volume(image: nib.spatialimages.SpatialImage, max_samples_per_axis: int = 96) -> VolumeSummary:
-    shape = image.shape[:3]
-    slices = tuple(slice(None, None, max(1, int(np.ceil(size / max_samples_per_axis)))) for size in shape)
-    sampled = np.asarray(image.dataobj[slices], dtype=np.float32)
-    finite = sampled[np.isfinite(sampled)]
-    if finite.size == 0:
-        return VolumeSummary(0.0, 0.0, 0.0, 1.0, True)
-
-    minimum = float(finite.min())
-    maximum = float(finite.max())
-    low, high = np.percentile(finite, [1.0, 99.0])
-    if float(high) <= float(low):
-        high = low + 1.0
-    return VolumeSummary(
-        minimum=minimum,
-        maximum=maximum,
-        low_percentile=float(low),
-        high_percentile=float(high),
-        is_constant=minimum == maximum,
+    from .ui.focus import focus_indices_from_masks  # noqa: E402
+    from .ui.models import (  # noqa: E402
+        CTVolume,
+        MASK_COLORS,
+        MaskLayer,
+        MaskLoadResult,
+        ORIENTATION_TITLES,
+        SLICE_AXES,
+        WINDOW_PRESETS,
+        clamp,
     )
-
-
-def extract_slice(image: nib.spatialimages.SpatialImage, orientation: str, indices: list[int]) -> np.ndarray:
-    if orientation == "axial":
-        base = np.asarray(image.dataobj[:, :, indices[2]], dtype=np.float32)
-        return np.rot90(base)
-    if orientation == "coronal":
-        base = np.asarray(image.dataobj[:, indices[1], :], dtype=np.float32)
-        return np.rot90(base)
-    if orientation == "sagittal":
-        base = np.asarray(image.dataobj[indices[0], :, :], dtype=np.float32)
-        return np.rot90(np.flipud(base))
-    raise ValueError(f"Unsupported orientation: {orientation}")
-
-
-def crosshair_position(shape: tuple[int, int, int], orientation: str, indices: list[int]) -> tuple[int, int]:
-    nx, ny, nz = shape
-    if orientation == "axial":
-        return indices[0], ny - 1 - indices[1]
-    if orientation == "coronal":
-        return indices[0], nz - 1 - indices[2]
-    if orientation == "sagittal":
-        return ny - 1 - indices[1], nz - 1 - indices[2]
-    raise ValueError(f"Unsupported orientation: {orientation}")
-
-
-def orientation_labels(orientation: str) -> tuple[str, str, str, str]:
-    if orientation == "axial":
-        return "R", "L", "A", "P"
-    if orientation == "coronal":
-        return "R", "L", "S", "I"
-    if orientation == "sagittal":
-        return "A", "P", "S", "I"
-    raise ValueError(f"Unsupported orientation: {orientation}")
-
-
-def display_spacing(zooms: tuple[float, float, float], orientation: str) -> tuple[float, float]:
-    if orientation == "axial":
-        return zooms[0], zooms[1]
-    if orientation == "coronal":
-        return zooms[0], zooms[2]
-    if orientation == "sagittal":
-        return zooms[1], zooms[2]
-    raise ValueError(f"Unsupported orientation: {orientation}")
-
-
-def physical_display_size(width: int, height: int, width_spacing: float, height_spacing: float) -> tuple[int, int]:
-    base_spacing = max(min(width_spacing, height_spacing), 1e-6)
-    scaled_width = max(1, int(round(width * (width_spacing / base_spacing))))
-    scaled_height = max(1, int(round(height * (height_spacing / base_spacing))))
-
-    longest_side = max(scaled_width, scaled_height)
-    if longest_side > 1800:
-        factor = 1800 / float(longest_side)
-        scaled_width = max(1, int(round(scaled_width * factor)))
-        scaled_height = max(1, int(round(scaled_height * factor)))
-
-    return scaled_width, scaled_height
-
-
-def grayscale_rgba(ct_slice: np.ndarray, center: int, width: int) -> np.ndarray:
-    safe_width = max(1, int(width))
-    lower = center - (safe_width / 2.0)
-    upper = center + (safe_width / 2.0)
-    scaled = np.clip((ct_slice - lower) / max(upper - lower, 1.0), 0.0, 1.0)
-    gray = (scaled * 255.0).astype(np.uint8)
-    alpha = np.full_like(gray, 255, dtype=np.uint8)
-    return np.ascontiguousarray(np.stack((gray, gray, gray, alpha), axis=-1))
-
-
-def blend_mask(rgba: np.ndarray, mask: np.ndarray, color: tuple[int, int, int], opacity: float) -> None:
-    if not np.any(mask):
-        return
-
-    alpha = float(np.clip(opacity, 0.0, 1.0))
-    color_array = np.asarray(color, dtype=np.float32)
-    base_pixels = rgba[mask, :3].astype(np.float32)
-    rgba[mask, :3] = ((1.0 - alpha) * base_pixels + alpha * color_array).astype(np.uint8)
-
-    eroded = ndimage.binary_erosion(mask, structure=np.ones((3, 3), dtype=bool), border_value=0)
-    outline = mask & ~eroded
-    if np.any(outline):
-        rgba[outline, :3] = np.asarray(color, dtype=np.uint8)
-
-
-def qimage_from_rgba(rgba: np.ndarray) -> QImage:
-    height, width, _ = rgba.shape
-    bytes_per_line = width * 4
-    return QImage(rgba.data, width, height, bytes_per_line, QImage.Format.Format_RGBA8888).copy()
-
-
-class SliceCanvas(QLabel):
-    imageClicked = pyqtSignal(str, int, int)
-    wheelStepped = pyqtSignal(str, int)
-
-    def __init__(self, orientation: str) -> None:
-        super().__init__()
-        self.orientation = orientation
-        self._base_pixmap = QPixmap()
-        self._logical_size = QSize()
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(260, 260)
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.setText("Load a CT to start")
-        self.setWordWrap(True)
-        self.setStyleSheet(
-            """
-            QLabel {
-                background: #0f1722;
-                border: 1px solid #243244;
-                border-radius: 14px;
-                color: #9fb0c3;
-                font-size: 13px;
-            }
-            """
-        )
-
-    def clear_image(self, message: str) -> None:
-        self._base_pixmap = QPixmap()
-        self._logical_size = QSize()
-        self.clear()
-        self.setText(message)
-
-    def set_image(self, pixmap: QPixmap, logical_size: tuple[int, int]) -> None:
-        self._base_pixmap = pixmap
-        self._logical_size = QSize(logical_size[0], logical_size[1])
-        self._refresh_pixmap()
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._refresh_pixmap()
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
-            coords = self._map_to_image(event.position().x(), event.position().y())
-            if coords is not None:
-                self.imageClicked.emit(self.orientation, coords[0], coords[1])
-        super().mousePressEvent(event)
-
-    def wheelEvent(self, event) -> None:  # noqa: N802
-        delta = event.angleDelta().y()
-        if delta != 0:
-            self.wheelStepped.emit(self.orientation, 1 if delta > 0 else -1)
-        event.accept()
-
-    def _refresh_pixmap(self) -> None:
-        if self._base_pixmap.isNull():
-            return
-
-        scaled = self._base_pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.setPixmap(scaled)
-
-    def _map_to_image(self, x_pos: float, y_pos: float) -> tuple[int, int] | None:
-        shown = self.pixmap()
-        if shown is None or shown.isNull() or self._logical_size.isEmpty():
-            return None
-
-        x_offset = (self.width() - shown.width()) / 2.0
-        y_offset = (self.height() - shown.height()) / 2.0
-        if x_pos < x_offset or y_pos < y_offset:
-            return None
-        if x_pos > x_offset + shown.width() or y_pos > y_offset + shown.height():
-            return None
-
-        logical_width = self._logical_size.width()
-        logical_height = self._logical_size.height()
-        image_x = int((x_pos - x_offset) * logical_width / max(shown.width(), 1))
-        image_y = int((y_pos - y_offset) * logical_height / max(shown.height(), 1))
-        image_x = clamp(image_x, 0, logical_width - 1)
-        image_y = clamp(image_y, 0, logical_height - 1)
-        return image_x, image_y
-
-
-class SliceView(QWidget):
-    sliceChanged = pyqtSignal(str, int)
-    crosshairRequested = pyqtSignal(str, int, int)
-
-    def __init__(self, orientation: str) -> None:
-        super().__init__()
-        self.orientation = orientation
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self.title_label = QLabel(ORIENTATION_TITLES[orientation])
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #edf2f7;")
-
-        self.canvas = SliceCanvas(orientation)
-
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setEnabled(False)
-        self.slider.valueChanged.connect(lambda value: self.sliceChanged.emit(self.orientation, value))
-
-        self.footer_label = QLabel("No volume loaded")
-        self.footer_label.setStyleSheet("font-size: 12px; color: #92a4b8;")
-
-        self.canvas.imageClicked.connect(self.crosshairRequested.emit)
-        self.canvas.wheelStepped.connect(self._step_from_wheel)
-
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.canvas, 1)
-        layout.addWidget(self.slider)
-        layout.addWidget(self.footer_label)
-
-    def clear_view(self) -> None:
-        self.slider.blockSignals(True)
-        self.slider.setRange(0, 0)
-        self.slider.setValue(0)
-        self.slider.setEnabled(False)
-        self.slider.blockSignals(False)
-        self.canvas.clear_image("Load a CT to start")
-        self.footer_label.setText("No volume loaded")
-
-    def set_slice_bounds(self, max_index: int) -> None:
-        self.slider.blockSignals(True)
-        self.slider.setRange(0, max_index)
-        self.slider.setValue(min(self.slider.value(), max_index))
-        self.slider.setEnabled(True)
-        self.slider.blockSignals(False)
-
-    def set_slice_index(self, value: int) -> None:
-        self.slider.blockSignals(True)
-        self.slider.setValue(value)
-        self.slider.blockSignals(False)
-
-    def set_image(self, pixmap: QPixmap, logical_size: tuple[int, int]) -> None:
-        self.canvas.set_image(pixmap, logical_size)
-
-    def set_footer(self, text: str) -> None:
-        self.footer_label.setText(text)
-
-    def _step_from_wheel(self, orientation: str, step: int) -> None:
-        new_value = clamp(self.slider.value() + step, self.slider.minimum(), self.slider.maximum())
-        if new_value != self.slider.value():
-            self.slider.setValue(new_value)
-
-
-class CTLoadWorker(QObject):
-    finished = pyqtSignal(object)
-    failed = pyqtSignal(str, str)
-
-    def __init__(self, path: str) -> None:
-        super().__init__()
-        self.path = path
-
-    def run(self) -> None:
-        try:
-            payload = ct_io.load_ct_volume(self.path)
-        except Exception as exc:  # pragma: no cover - UI error path
-            self.failed.emit("Could not load CT", str(exc))
-            return
-
-        self.finished.emit(payload)
-
-
-class MaskLoadWorker(QObject):
-    finished = pyqtSignal(object)
-    failed = pyqtSignal(str, str)
-
-    def __init__(self, paths: list[str], ct_image: nib.spatialimages.SpatialImage, start_index: int) -> None:
-        super().__init__()
-        self.paths = paths
-        self.ct_image = ct_image
-        self.start_index = start_index
-
-    def run(self) -> None:
-        try:
-            result = ct_io.load_mask_layers(self.paths, self.ct_image, self.start_index)
-        except Exception as exc:  # pragma: no cover - UI error path
-            self.failed.emit("Could not load masks", str(exc))
-            return
-
-        self.finished.emit(result)
-
-
-class MaskPreviewWorker(QObject):
-    finished = pyqtSignal(int, object)
-    failed = pyqtSignal(str, str)
-
-    def __init__(self, generation: int, ct_volume: CTVolume, layers: list[MaskLayer]) -> None:
-        super().__init__()
-        self.generation = generation
-        self.ct_volume = ct_volume
-        self.layers = layers
-
-    def run(self) -> None:
-        try:
-            figure = ct_mask_viz.build_mask_preview_figure(self.ct_volume, self.layers)
-            payload = figure.to_plotly_json()
-        except Exception as exc:  # pragma: no cover - UI error path
-            self.failed.emit("Could not build 3D mask preview", str(exc))
-            return
-
-        self.finished.emit(self.generation, payload)
-
-
+    from .ui.runtime import install_qt_message_filter  # noqa: E402
+    from .ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker  # noqa: E402
 class CTMaskViewer(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        _install_qt_message_filter()
+        install_qt_message_filter()
         self.ct_volume: CTVolume | None = None
         self.ct_zooms = (1.0, 1.0, 1.0)
         self.mask_layers: list[MaskLayer] = []
@@ -1081,7 +603,9 @@ class CTMaskViewer(QMainWindow):
         if result.layers:
             self.mask_layers.extend(result.layers)
             self.mask_slice_cache.clear()
-            self._focus_views_on_masks(result.layers)
+            focused_indices = focus_indices_from_masks(self.ct_volume.shape, result.layers) if self.ct_volume is not None else None
+            if focused_indices is not None:
+                self.current_indices = focused_indices
             self.refresh_mask_list()
             self.update_volume_info()
             self.render_all_views()
@@ -1096,33 +620,6 @@ class CTMaskViewer(QMainWindow):
     def _on_worker_failed(self, title: str, message: str) -> None:
         self._set_loading_state("Load failed.", busy=False)
         self._show_error(title, message)
-
-    def _focus_views_on_masks(self, layers: list[MaskLayer]) -> None:
-        if self.ct_volume is None or not layers:
-            return
-
-        mask_union = np.zeros(self.ct_volume.shape, dtype=bool)
-        for layer in layers:
-            mask_union |= np.asarray(layer.image.dataobj) != 0
-
-        if not np.any(mask_union):
-            return
-
-        center = ndimage.center_of_mass(mask_union.astype(np.uint8, copy=False))
-        target = [
-            clamp(int(round(center[0])), 0, self.ct_volume.shape[0] - 1),
-            clamp(int(round(center[1])), 0, self.ct_volume.shape[1] - 1),
-            clamp(int(round(center[2])), 0, self.ct_volume.shape[2] - 1),
-        ]
-
-        if not mask_union[tuple(target)]:
-            coords = np.argwhere(mask_union)
-            if coords.size == 0:
-                return
-            deltas = coords.astype(np.float32, copy=False) - np.asarray(center, dtype=np.float32)
-            target = coords[int(np.argmin(np.sum(deltas * deltas, axis=1)))].tolist()
-
-        self.current_indices = [int(value) for value in target]
 
     def _clear_ct_thread(self) -> None:
         self._ct_thread = None
@@ -1484,7 +981,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args(sys.argv[1:])
-    _install_qt_message_filter()
+    install_qt_message_filter()
     app = QApplication([sys.argv[0]])
     app.setApplicationName("CT and Segmentation Viewer")
     viewer = CTMaskViewer()
