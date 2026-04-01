@@ -399,8 +399,11 @@ class MaskVisualizationPane(QFrame):
         self.stack.setCurrentWidget(self.placeholder_label)
 
     def set_busy(self, message: str) -> None:
-        self.placeholder_label.setText(message)
-        self.stack.setCurrentWidget(self.placeholder_label)
+        if self._web_view is None or not self._page_ready:
+            self.placeholder_label.setText(message)
+            self.stack.setCurrentWidget(self.placeholder_label)
+        elif self._web_view is not None:
+            self.stack.setCurrentWidget(self._web_view)
 
     def set_data_json(self, figure_json: dict | None, visible_mask_count: int) -> None:
         if self._web_view is None:

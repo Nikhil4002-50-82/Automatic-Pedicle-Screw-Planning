@@ -21,6 +21,32 @@ QFrame#sidePanel, QFrame#viewPanel {
     border: 1px solid #1f3147;
     border-radius: 18px;
 }
+QWidget#globalLoadingOverlay {
+    background: rgba(7, 12, 20, 0.72);
+}
+QFrame#loadingCard {
+    background: rgba(11, 19, 30, 0.92);
+    border: 1px solid rgba(91, 243, 255, 0.18);
+    border-radius: 18px;
+}
+QLabel#loadingOverlayTitle {
+    color: #edf2f7;
+    font-size: 15px;
+    font-weight: 700;
+}
+QLabel#loadingOverlayText {
+    color: #9fb1c4;
+    font-size: 12px;
+}
+QProgressBar {
+    background: rgba(20, 31, 45, 0.95);
+    border: 1px solid rgba(91, 243, 255, 0.18);
+    border-radius: 4px;
+}
+QProgressBar::chunk {
+    background: #5bf3ff;
+    border-radius: 4px;
+}
 QSplitter::handle:vertical {
     background: transparent;
     border: none;

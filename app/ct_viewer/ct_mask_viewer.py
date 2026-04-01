@@ -89,6 +89,7 @@ class CTMaskViewer(QMainWindow):
     def clear_viewer(self) -> None:
         if getattr(self, "_mask_visualizer_expanded", False):
             self._set_mask_visualizer_expanded(False)
+        self.hide_loading_overlay()
         self.ct_volume = None
         self.mask_layers = []
         self.ct_slice_cache.clear()
@@ -212,6 +213,7 @@ class CTMaskViewer(QMainWindow):
             self.statusBar().showMessage("All selected masks are already loaded.", 4000)
             return
 
+        self.show_loading_overlay("Loading masks and preparing overlays...")
         self._set_loading_state("Loading masks...", busy=True)
         thread = QThread(self)
         worker = MaskLoadWorker(unique_paths, self.ct_volume.image, len(self.mask_layers))
@@ -285,12 +287,14 @@ class CTMaskViewer(QMainWindow):
             self._set_loading_state(f"Loaded {len(result.layers)} mask(s).", busy=False)
         else:
             self._set_loading_state("No masks were loaded.", busy=False)
+            self.hide_loading_overlay()
 
         if result.warnings:
             QMessageBox.information(self, "Mask Load Notes", "\n".join(result.warnings))
 
     def _on_worker_failed(self, title: str, message: str) -> None:
         self._set_loading_state("Load failed.", busy=False)
+        self.hide_loading_overlay()
         self._show_error(title, message)
 
     def _clear_ct_thread(self) -> None:
@@ -504,11 +508,13 @@ class CTMaskViewer(QMainWindow):
 
         if self.ct_volume is None:
             self.mask_viz.clear_view()
+            self.hide_loading_overlay()
             return
 
         visible_layers = [layer for layer in self.mask_layers if layer.visible]
         if not visible_layers:
             self.mask_viz.clear_view()
+            self.hide_loading_overlay()
             return
 
         if self._mask_preview_thread is not None:
@@ -517,6 +523,7 @@ class CTMaskViewer(QMainWindow):
 
         self._mask_preview_generation += 1
         generation = self._mask_preview_generation
+        self.show_loading_overlay(f"Rendering {len(visible_layers)} visible mask(s)...")
         self.mask_viz.set_busy(f"Rendering {len(visible_layers)} visible mask(s)...")
 
         thread = QThread(self)
@@ -548,6 +555,8 @@ class CTMaskViewer(QMainWindow):
         if self._mask_preview_needs_refresh and self.ct_volume is not None and any(layer.visible for layer in self.mask_layers):
             self._mask_preview_needs_refresh = False
             QTimer.singleShot(0, self.refresh_mask_visualization)
+            return
+        QTimer.singleShot(120, self.hide_loading_overlay)
 
     def _render_view(self, orientation: str, center: int, width: int, opacity: float) -> tuple[QPixmap, tuple[int, int]]:
         ct_slice = self._get_ct_slice(orientation)
@@ -646,6 +655,18 @@ class CTMaskViewer(QMainWindow):
 
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.critical(self, title, message)
+
+    def show_loading_overlay(self, message: str) -> None:
+        if not hasattr(self, "loading_overlay"):
+            return
+        self.loading_overlay_label.setText(message)
+        self.loading_overlay.setVisible(True)
+        self.loading_overlay.raise_()
+
+    def hide_loading_overlay(self) -> None:
+        if not hasattr(self, "loading_overlay"):
+            return
+        self.loading_overlay.setVisible(False)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QScrollArea,
+    QProgressBar,
     QVBoxLayout,
     QWidget,
 )
@@ -30,9 +32,14 @@ from .models import WINDOW_PRESETS
 
 def build_ui(viewer: QMainWindow) -> None:
     central = QWidget()
-    outer_layout = QHBoxLayout(central)
+    outer_layout = QGridLayout(central)
     outer_layout.setContentsMargins(18, 18, 18, 18)
     outer_layout.setSpacing(18)
+
+    content = QWidget()
+    content_layout = QHBoxLayout(content)
+    content_layout.setContentsMargins(0, 0, 0, 0)
+    content_layout.setSpacing(18)
 
     splitter = QSplitter(Qt.Orientation.Horizontal)
     splitter.setChildrenCollapsible(False)
@@ -41,12 +48,68 @@ def build_ui(viewer: QMainWindow) -> None:
     splitter.addWidget(build_view_panel(viewer))
     splitter.setSizes([300, 1320])
 
-    outer_layout.addWidget(splitter)
+    content_layout.addWidget(splitter)
+
+    viewer.loading_overlay = _build_loading_overlay(viewer)
+    viewer.loading_overlay.setVisible(False)
+
+    outer_layout.addWidget(content, 0, 0)
+    outer_layout.addWidget(viewer.loading_overlay, 0, 0)
     viewer.setCentralWidget(central)
 
     status = QStatusBar()
     status.showMessage("Load a CT file or DICOM folder to begin.")
     viewer.setStatusBar(status)
+
+
+def _build_loading_overlay(viewer: QMainWindow) -> QWidget:
+    overlay = QWidget()
+    overlay.setObjectName("globalLoadingOverlay")
+    overlay.setStyleSheet(
+        """
+        QWidget#globalLoadingOverlay {
+            background: rgba(7, 12, 20, 0.72);
+        }
+        """
+    )
+
+    layout = QVBoxLayout(overlay)
+    layout.setContentsMargins(24, 24, 24, 24)
+    layout.setSpacing(12)
+    layout.addStretch(1)
+
+    card = QFrame()
+    card.setObjectName("loadingCard")
+    card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Maximum)
+    card.setMinimumSize(700, 270)
+    card_layout = QVBoxLayout(card)
+    card_layout.setContentsMargins(34, 28, 34, 28)
+    card_layout.setSpacing(14)
+
+    viewer.loading_overlay_title = QLabel("Loading masks")
+    viewer.loading_overlay_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    viewer.loading_overlay_title.setObjectName("loadingOverlayTitle")
+    viewer.loading_overlay_title.setStyleSheet("font-size: 19px;")
+
+    viewer.loading_overlay_label = QLabel("Preparing mask overlays and 3D preview...")
+    viewer.loading_overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    viewer.loading_overlay_label.setWordWrap(True)
+    viewer.loading_overlay_label.setObjectName("loadingOverlayText")
+    viewer.loading_overlay_label.setStyleSheet("font-size: 13px;")
+
+    viewer.loading_overlay_bar = QProgressBar()
+    viewer.loading_overlay_bar.setRange(0, 0)
+    viewer.loading_overlay_bar.setTextVisible(False)
+    viewer.loading_overlay_bar.setFixedHeight(10)
+    viewer.loading_overlay_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    card_layout.addWidget(viewer.loading_overlay_title)
+    card_layout.addWidget(viewer.loading_overlay_label)
+    card_layout.addWidget(viewer.loading_overlay_bar)
+
+    layout.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+    layout.addStretch(1)
+    return overlay
 
 
 def build_control_panel(viewer: QMainWindow) -> QWidget:
