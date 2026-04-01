@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from typing import Iterable
 from pathlib import Path
@@ -173,12 +174,11 @@ def build_mask_preview_figure(ct_volume: CTVolume | None, layers: Iterable[MaskL
     return fig
 
 
-def _figure_to_html_document(fig) -> str:
+def _figure_to_html_document() -> str:
     _, pio = _ensure_plotly_imports()
     bundle_uri = Path(_ensure_plotlyjs_bundle()).as_uri()
     style = _style_config("cinematic", "dark")
-    paper_bg = getattr(fig.layout, "paper_bgcolor", None) or style["paper_bgcolor"]
-    qt_fig = _figure_without_embedded_controls(fig)
+    paper_bg = style["paper_bgcolor"]
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -225,17 +225,33 @@ def _figure_to_html_document(fig) -> str:
     .modebar-btn.active {{
       background: rgba(91, 243, 255, 0.26) !important;
     }}
+    #plot {{
+      width: 100%;
+      height: calc(100% - 0px);
+    }}
   </style>
 </head>
 <body>
-{pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%", config=dict(displayModeBar=True, displaylogo=False, scrollZoom=True))}
+  <div id="plot"></div>
+  <script>
+    window.renderMaskPreview = function(figJson) {{
+      const fig = JSON.parse(figJson);
+      const plot = document.getElementById('plot');
+      if (!window.Plotly || !plot) return;
+      Plotly.react(plot, fig.data || [], fig.layout || {{}}, {{
+        displayModeBar: true,
+        displaylogo: false,
+        scrollZoom: true
+      }});
+    }};
+  </script>
 </body>
 </html>
 """
 
 
-def _write_html_document(fig) -> str:
-    html_document = _figure_to_html_document(fig)
+def _write_html_document() -> str:
+    html_document = _figure_to_html_document()
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmpfile:
         tmpfile.write(html_document.encode("utf-8"))
         return tmpfile.name
@@ -247,21 +263,22 @@ class MaskVisualizationPane(QFrame):
         self.setObjectName("maskVisualizationPanel")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumHeight(260)
+        self._html_path = _write_html_document()
+        self._pending_payload: str | None = None
+        self._page_ready = False
 
         self._web_view = None
         if QWebEngineView is not None:
             try:
                 self._web_view = QWebEngineView()
                 self._web_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                self._web_view.loadFinished.connect(self._on_page_loaded)
+                self._web_view.load(QUrl.fromLocalFile(self._html_path))
             except Exception:  # pragma: no cover - headless or webengine bootstrap failure
                 self._web_view = None
 
         self.title_label = QLabel("3D Mask Preview")
         self.title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #edf2f7;")
-
-        self.status_label = QLabel("Load masks to preview them in 3D.")
-        self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("font-size: 12px; color: #90a5bb;")
 
         self.placeholder_label = QLabel("Load a CT and masks to preview them in 3D.")
         self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -291,36 +308,49 @@ class MaskVisualizationPane(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(self.title_label)
-        layout.addWidget(self.status_label)
         layout.addWidget(self.stack, 1)
 
     def clear_view(self) -> None:
-        self.status_label.setText("Load masks to preview them in 3D.")
         self.placeholder_label.setText("Load a CT and masks to preview them in 3D.")
+        self._pending_payload = None
         self.stack.setCurrentWidget(self.placeholder_label)
 
-    def set_data(self, ct_volume: CTVolume | None, layers: Iterable[MaskLayer]) -> None:
-        visible_layers = [layer for layer in layers if layer.visible]
+    def set_busy(self, message: str) -> None:
+        self.placeholder_label.setText(message)
+        self.stack.setCurrentWidget(self.placeholder_label)
 
+    def set_data_json(self, figure_json: dict | None, visible_mask_count: int) -> None:
         if self._web_view is None:
-            self.status_label.setText("3D preview unavailable. PyQtWebEngine is not available in this environment.")
             self.placeholder_label.setText("3D mask preview requires PyQtWebEngine.")
             self.stack.setCurrentWidget(self.placeholder_label)
             return
 
-        if ct_volume is None:
+        if figure_json is None:
             self.clear_view()
             return
 
-        if not visible_layers:
-            self.status_label.setText("No visible masks loaded.")
-            self.placeholder_label.setText("Toggle a mask on to see its 3D surface.")
+        payload = json.dumps(figure_json, separators=(",", ":"))
+        self._pending_payload = payload
+        if self._page_ready:
+            self._push_payload()
+            self.stack.setCurrentWidget(self._web_view)
+        else:
+            self.stack.setCurrentWidget(self.placeholder_label)
+
+    def _on_page_loaded(self, ok: bool) -> None:
+        self._page_ready = ok
+        if not ok:
+            self.placeholder_label.setText("3D mask preview could not be initialized.")
             self.stack.setCurrentWidget(self.placeholder_label)
             return
 
-        self.status_label.setText(f"Rendering {len(visible_layers)} visible mask(s)...")
-        fig = build_mask_preview_figure(ct_volume, visible_layers)
-        html_path = _write_html_document(fig)
-        self._web_view.load(QUrl.fromLocalFile(html_path))
         self.stack.setCurrentWidget(self._web_view)
-        self.status_label.setText(f"{len(visible_layers)} visible mask(s) in 3D preview.")
+        self._push_payload()
+
+    def _push_payload(self) -> None:
+        if self._web_view is None or not self._pending_payload:
+            return
+
+        payload = self._pending_payload
+        self._pending_payload = None
+        self._web_view.page().runJavaScript(f"window.renderMaskPreview({json.dumps(payload)});")

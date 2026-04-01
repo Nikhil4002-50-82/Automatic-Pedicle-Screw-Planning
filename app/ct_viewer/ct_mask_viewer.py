@@ -11,6 +11,7 @@ import numpy as np
 from nibabel.processing import resample_from_to
 from PyQt6.QtCore import QObject, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -502,6 +503,27 @@ class MaskLoadWorker(QObject):
         self.finished.emit(result)
 
 
+class MaskPreviewWorker(QObject):
+    finished = pyqtSignal(int, object)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, generation: int, ct_volume: CTVolume, layers: list[MaskLayer]) -> None:
+        super().__init__()
+        self.generation = generation
+        self.ct_volume = ct_volume
+        self.layers = layers
+
+    def run(self) -> None:
+        try:
+            figure = ct_mask_viz.build_mask_preview_figure(self.ct_volume, self.layers)
+            payload = figure.to_plotly_json()
+        except Exception as exc:  # pragma: no cover - UI error path
+            self.failed.emit("Could not build 3D mask preview", str(exc))
+            return
+
+        self.finished.emit(self.generation, payload)
+
+
 class CTMaskViewer(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -517,6 +539,10 @@ class CTMaskViewer(QMainWindow):
         self._mask_thread: QThread | None = None
         self._ct_worker: CTLoadWorker | None = None
         self._mask_worker: MaskLoadWorker | None = None
+        self._mask_preview_thread: QThread | None = None
+        self._mask_preview_worker: MaskPreviewWorker | None = None
+        self._mask_preview_generation = 0
+        self._mask_preview_needs_refresh = False
         self._window_control_lock = False
 
         self.setWindowTitle("CT and Segmentation Viewer")
@@ -550,8 +576,8 @@ class CTMaskViewer(QMainWindow):
     def _build_control_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("sidePanel")
-        panel.setMinimumWidth(280)
-        panel.setMaximumWidth(360)
+        panel.setFixedWidth(340)
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -561,6 +587,9 @@ class CTMaskViewer(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll.setFixedWidth(304)
+        scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -598,7 +627,7 @@ class CTMaskViewer(QMainWindow):
         self.volume_info_label.setWordWrap(True)
         self.volume_info_label.setObjectName("infoBlock")
         self.volume_info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.volume_info_label.setMaximumHeight(150)
+        self.volume_info_label.setFixedHeight(118)
 
         self.window_preset_combo = QComboBox()
         self.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
@@ -698,10 +727,12 @@ class CTMaskViewer(QMainWindow):
         self.views["axial"].crosshairRequested.connect(self.on_view_clicked)
 
         axial_column = QSplitter(Qt.Orientation.Vertical)
+        axial_column.setObjectName("maskAxialSplit")
         axial_column.setChildrenCollapsible(False)
-        axial_column.addWidget(self.views["axial"])
+        axial_column.setHandleWidth(0)
         axial_column.addWidget(self.mask_viz)
-        axial_column.setSizes([520, 520])
+        axial_column.addWidget(self.views["axial"])
+        axial_column.setSizes([560, 440])
 
         views_layout = QHBoxLayout()
         views_layout.setSpacing(14)
@@ -794,6 +825,10 @@ class CTMaskViewer(QMainWindow):
                 border: 1px solid #1f3147;
                 border-radius: 18px;
             }
+            QSplitter::handle:vertical {
+                background: transparent;
+                border: none;
+            }
             QLabel#panelTitle { color: #f7fbff; font-size: 24px; font-weight: 700; }
             QLabel#panelSubtitle { color: #9fb1c4; font-size: 13px; }
             QLabel#sectionLabel { color: #f6fbff; font-size: 15px; font-weight: 600; margin-top: 4px; }
@@ -874,6 +909,7 @@ class CTMaskViewer(QMainWindow):
             view.clear_view()
         if hasattr(self, "mask_viz"):
             self.mask_viz.clear_view()
+        self._mask_preview_needs_refresh = False
         self.mask_list.clear()
         self.window_center_slider.setEnabled(False)
         self.window_width_slider.setEnabled(False)
@@ -1108,16 +1144,17 @@ class CTMaskViewer(QMainWindow):
         shape_text = " x ".join(str(value) for value in self.ct_volume.shape)
         spacing_text = " x ".join(f"{value:.2f} mm" for value in self.ct_zooms)
         mask_count = len(self.mask_layers)
+        filename = Path(self.ct_volume.path).name
+        metrics = QFontMetrics(self.volume_info_label.font())
+        elided_name = metrics.elidedText(filename, Qt.TextElideMode.ElideMiddle, 240)
 
         self.volume_info_label.setText(
             "\n".join(
                 [
-                    f"CT: {Path(self.ct_volume.path).name}",
+                    f"CT: {elided_name}",
                     f"Shape: {shape_text}",
                     f"Spacing: {spacing_text}",
-                    self.ct_intensity_summary,
-                    f"Masks: {mask_count}",
-                    "Orientation: canonical RAS+",
+                    f"{self.ct_intensity_summary} | Masks: {mask_count} | Orientation: canonical RAS+",
                 ]
             )
         )
@@ -1237,7 +1274,52 @@ class CTMaskViewer(QMainWindow):
         if not hasattr(self, "mask_viz"):
             return
 
-        self.mask_viz.set_data(self.ct_volume, self.mask_layers)
+        if self.ct_volume is None:
+            self.mask_viz.clear_view()
+            return
+
+        visible_layers = [layer for layer in self.mask_layers if layer.visible]
+        if not visible_layers:
+            self.mask_viz.clear_view()
+            return
+
+        if self._mask_preview_thread is not None:
+            self._mask_preview_needs_refresh = True
+            return
+
+        self._mask_preview_generation += 1
+        generation = self._mask_preview_generation
+        self.mask_viz.set_busy(f"Rendering {len(visible_layers)} visible mask(s)...")
+
+        thread = QThread(self)
+        worker = MaskPreviewWorker(generation, self.ct_volume, visible_layers)
+        self._mask_preview_thread = thread
+        self._mask_preview_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_mask_preview_ready)
+        worker.failed.connect(self._on_worker_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_mask_preview_thread)
+        thread.start()
+
+    def _on_mask_preview_ready(self, generation: int, figure_json: object) -> None:
+        if generation != self._mask_preview_generation or not hasattr(self, "mask_viz"):
+            return
+
+        self.mask_viz.set_data_json(figure_json if isinstance(figure_json, dict) else None, len([layer for layer in self.mask_layers if layer.visible]))
+        self._mask_preview_needs_refresh = False
+
+    def _clear_mask_preview_thread(self) -> None:
+        self._mask_preview_thread = None
+        self._mask_preview_worker = None
+        if self._mask_preview_needs_refresh and self.ct_volume is not None and any(layer.visible for layer in self.mask_layers):
+            self._mask_preview_needs_refresh = False
+            QTimer.singleShot(0, self.refresh_mask_visualization)
 
     def _render_view(self, orientation: str, center: int, width: int, opacity: float) -> tuple[QPixmap, tuple[int, int]]:
         ct_slice = self._get_ct_slice(orientation)
