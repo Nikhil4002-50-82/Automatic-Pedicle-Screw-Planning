@@ -87,6 +87,8 @@ class CTMaskViewer(QMainWindow):
         self.clear_viewer()
 
     def clear_viewer(self) -> None:
+        if getattr(self, "_mask_visualizer_expanded", False):
+            self._set_mask_visualizer_expanded(False)
         self.ct_volume = None
         self.mask_layers = []
         self.ct_slice_cache.clear()
@@ -105,6 +107,34 @@ class CTMaskViewer(QMainWindow):
         self.crosshair_checkbox.setEnabled(False)
         self.window_preset_combo.setEnabled(False)
         self._set_loading_state("Load a CT file or DICOM folder to begin.", busy=False)
+
+    def toggle_mask_visualizer_expanded(self) -> None:
+        self._set_mask_visualizer_expanded(not getattr(self, "_mask_visualizer_expanded", False))
+
+    def _set_mask_visualizer_expanded(self, expanded: bool) -> None:
+        if not hasattr(self, "view_stack") or not hasattr(self, "mask_viz"):
+            return
+        if getattr(self, "_mask_visualizer_expanded", False) == expanded:
+            return
+
+        self._mask_visualizer_expanded = expanded
+
+        if expanded:
+            self.mask_viz.setParent(None)
+            self.expanded_mask_host_layout.insertWidget(0, self.mask_viz, 1)
+            self.view_stack.setCurrentWidget(self.expanded_view_page)
+            self.expanded_overlay_opacity_slider.blockSignals(True)
+            self.expanded_overlay_opacity_slider.setValue(int(round(self.mask_viz.opacity() * 100)))
+            self.expanded_overlay_opacity_slider.blockSignals(False)
+            self.expanded_overlay_opacity_value.setText(f"{self.expanded_overlay_opacity_slider.value()}%")
+        else:
+            self.mask_viz.setParent(None)
+            self.normal_axial_splitter.insertWidget(0, self.mask_viz)
+            self.normal_axial_splitter.setSizes([560, 440])
+            self.view_stack.setCurrentWidget(self.normal_view_page)
+
+        self.render_all_views()
+        QTimer.singleShot(0, self.mask_viz.notify_resize)
 
     def select_ct_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -419,6 +449,10 @@ class CTMaskViewer(QMainWindow):
         self.overlay_opacity_value.setText(f"{value}%")
         self.render_all_views()
 
+    def on_expanded_overlay_opacity_changed(self, value: int) -> None:
+        self.expanded_overlay_opacity_value.setText(f"{value}%")
+        self.mask_viz.set_opacity(value / 100.0)
+
     def on_slice_changed(self, orientation: str, index: int) -> None:
         if self.ct_volume is None:
             return
@@ -449,7 +483,10 @@ class CTMaskViewer(QMainWindow):
 
         center = self.window_center_slider.value()
         width = self.window_width_slider.value()
-        opacity = self.overlay_opacity_slider.value() / 100.0
+        if getattr(self, "_mask_visualizer_expanded", False) and hasattr(self, "expanded_overlay_opacity_slider"):
+            opacity = self.expanded_overlay_opacity_slider.value() / 100.0
+        else:
+            opacity = self.overlay_opacity_slider.value() / 100.0
 
         for orientation, view in self.views.items():
             pixmap, logical_size = self._render_view(orientation, center, width, opacity)

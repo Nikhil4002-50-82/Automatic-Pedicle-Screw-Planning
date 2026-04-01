@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QScrollArea,
     QVBoxLayout,
@@ -114,13 +115,14 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.window_center_value = QLabel("300")
     viewer.window_width_value = QLabel("1500")
     viewer.overlay_opacity_value = QLabel("45%")
+    viewer.overlay_opacity_widget = _build_slider_row(viewer.overlay_opacity_slider, viewer.overlay_opacity_value)
 
     controls_form = QFormLayout()
     controls_form.setSpacing(10)
     controls_form.addRow("Preset", viewer.window_preset_combo)
     controls_form.addRow("Center", _build_slider_row(viewer.window_center_slider, viewer.window_center_value))
     controls_form.addRow("Width", _build_slider_row(viewer.window_width_slider, viewer.window_width_value))
-    controls_form.addRow("Mask Opacity", _build_slider_row(viewer.overlay_opacity_slider, viewer.overlay_opacity_value))
+    controls_form.addRow("Mask Opacity", viewer.overlay_opacity_widget)
 
     viewer.crosshair_checkbox = QCheckBox("Show crosshair")
     viewer.crosshair_checkbox.setChecked(True)
@@ -189,6 +191,7 @@ def build_view_panel(viewer: QMainWindow) -> QWidget:
 
     viewer.cursor_info_label = QLabel("Voxel: -, -, -    HU: -")
     viewer.cursor_info_label.setObjectName("cursorInfo")
+    viewer._mask_visualizer_expanded = False
 
     viewer.views = {
         "axial": ct_widgets.SliceView("axial"),
@@ -196,30 +199,98 @@ def build_view_panel(viewer: QMainWindow) -> QWidget:
         "sagittal": ct_widgets.SliceView("sagittal"),
     }
     viewer.mask_viz = ct_mask_viz.MaskVisualizationPane()
+    viewer.mask_viz.doubleClicked.connect(viewer.toggle_mask_visualizer_expanded)
+    viewer.mask_viz.set_opacity(1.0)
 
     viewer.views["axial"].sliceChanged.connect(viewer.on_slice_changed)
     viewer.views["axial"].crosshairRequested.connect(viewer.on_view_clicked)
 
-    axial_column = QSplitter(Qt.Orientation.Vertical)
-    axial_column.setObjectName("maskAxialSplit")
-    axial_column.setChildrenCollapsible(False)
-    axial_column.setHandleWidth(0)
-    axial_column.addWidget(viewer.mask_viz)
-    axial_column.addWidget(viewer.views["axial"])
-    axial_column.setSizes([560, 440])
+    layout.addWidget(viewer.cursor_info_label)
 
-    views_layout = QHBoxLayout()
-    views_layout.setSpacing(14)
-    views_layout.addWidget(axial_column, 1)
+    viewer.view_stack = QStackedWidget()
+    viewer.normal_view_page = QWidget()
+    viewer.expanded_view_page = QWidget()
+    viewer.view_stack.addWidget(viewer.normal_view_page)
+    viewer.view_stack.addWidget(viewer.expanded_view_page)
+
+    _build_normal_view_page(viewer)
+    _build_expanded_view_page(viewer)
+
+    layout.addWidget(viewer.view_stack, 1)
+    return panel
+
+
+def _build_normal_view_page(viewer: QMainWindow) -> None:
+    layout = QHBoxLayout(viewer.normal_view_page)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(14)
+
+    viewer.normal_axial_splitter = QSplitter(Qt.Orientation.Vertical)
+    viewer.normal_axial_splitter.setObjectName("maskAxialSplit")
+    viewer.normal_axial_splitter.setChildrenCollapsible(False)
+    viewer.normal_axial_splitter.setHandleWidth(0)
+    viewer.normal_axial_splitter.addWidget(viewer.mask_viz)
+    viewer.normal_axial_splitter.addWidget(viewer.views["axial"])
+    viewer.normal_axial_splitter.setSizes([560, 440])
+
+    layout.addWidget(viewer.normal_axial_splitter, 1)
     for orientation in ("coronal", "sagittal"):
         view = viewer.views[orientation]
         view.sliceChanged.connect(viewer.on_slice_changed)
         view.crosshairRequested.connect(viewer.on_view_clicked)
-        views_layout.addWidget(view, 1)
+        layout.addWidget(view, 1)
 
-    layout.addWidget(viewer.cursor_info_label)
-    layout.addLayout(views_layout, 1)
-    return panel
+
+def _build_expanded_view_page(viewer: QMainWindow) -> None:
+    layout = QVBoxLayout(viewer.expanded_view_page)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(12)
+
+    viewer.expanded_mask_host = QWidget()
+    viewer.expanded_mask_host_layout = QVBoxLayout(viewer.expanded_mask_host)
+    viewer.expanded_mask_host_layout.setContentsMargins(0, 0, 0, 0)
+    viewer.expanded_mask_host_layout.setSpacing(12)
+    viewer.expanded_mask_toolbar = QWidget()
+    viewer.expanded_mask_toolbar_layout = QHBoxLayout(viewer.expanded_mask_toolbar)
+    viewer.expanded_mask_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+    viewer.expanded_mask_toolbar_layout.setSpacing(10)
+
+    viewer.expanded_return_button = QPushButton("Back to slices")
+    viewer.expanded_return_button.setMinimumHeight(34)
+    viewer.expanded_return_button.setFixedWidth(140)
+    viewer.expanded_return_button.clicked.connect(viewer.toggle_mask_visualizer_expanded)
+
+    viewer.expanded_hint_label = QLabel("Double-click the preview or press Esc to return to slices.")
+    viewer.expanded_hint_label.setObjectName("helperText")
+    viewer.expanded_hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    viewer.expanded_hint_label.setWordWrap(True)
+
+    viewer.expanded_mask_hint = QLabel("Adjust 3D opacity below without re-rendering the mesh.")
+    viewer.expanded_mask_hint.setObjectName("helperText")
+    viewer.expanded_mask_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    viewer.expanded_mask_hint.setWordWrap(True)
+
+    viewer.expanded_overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+    viewer.expanded_overlay_opacity_slider.setRange(0, 100)
+    viewer.expanded_overlay_opacity_slider.setValue(int(round(viewer.mask_viz.opacity() * 100)))
+    viewer.expanded_overlay_opacity_value = QLabel(f"{viewer.expanded_overlay_opacity_slider.value()}%")
+    viewer.expanded_overlay_opacity_widget = _build_slider_row(
+        viewer.expanded_overlay_opacity_slider,
+        viewer.expanded_overlay_opacity_value,
+    )
+    viewer.expanded_overlay_opacity_slider.valueChanged.connect(viewer.on_expanded_overlay_opacity_changed)
+
+    viewer.expanded_mask_toolbar_layout.addWidget(viewer.expanded_return_button, 0, Qt.AlignmentFlag.AlignLeft)
+    viewer.expanded_mask_toolbar_layout.addWidget(viewer.expanded_hint_label, 1)
+
+    viewer.expanded_mask_host_layout.addWidget(viewer.expanded_mask_toolbar)
+    viewer.expanded_mask_host_layout.addWidget(viewer.expanded_mask_hint)
+    viewer.expanded_mask_host_layout.addWidget(viewer.expanded_overlay_opacity_widget)
+
+    layout.addWidget(viewer.expanded_mask_host, 1)
+
+    shortcut = QShortcut(QKeySequence("Esc"), viewer)
+    shortcut.activated.connect(viewer.toggle_mask_visualizer_expanded)
 
 
 def build_actions(viewer: QMainWindow) -> None:

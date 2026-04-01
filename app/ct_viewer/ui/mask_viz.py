@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import tempfile
-from typing import Iterable
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QLabel, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
 
 from .models import CTVolume, MaskLayer
@@ -45,6 +45,22 @@ class _QuietPlotlyPage(QWebEnginePage if QWebEnginePage is not None else object)
         if text.startswith("Canvas2D: Multiple readback operations using getImageData"):
             return
         return super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
+
+
+class _DoubleClickLabel(QLabel):
+    doubleClicked = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+
+class _DoubleClickPlotlyView(QWebEngineView if QWebEngineView is not None else QWidget):
+    doubleClicked = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
 
 
 def _ensure_measure():
@@ -98,7 +114,7 @@ def _mask_trace(mask: np.ndarray, layer: MaskLayer):
         j=faces[:, 1],
         k=faces[:, 2],
         color=_rgb_string(layer.color),
-        opacity=0.62,
+        opacity=1.0,
         name=layer.name,
         flatshading=False,
         lighting=dict(ambient=0.58, diffuse=0.72, specular=0.18, roughness=0.48, fresnel=0.08),
@@ -240,7 +256,9 @@ def _figure_to_html_document() -> str:
     }}
     #plot {{
       width: 100%;
-      height: calc(100% - 0px);
+      height: 100%;
+      position: absolute;
+      inset: 0;
     }}
   </style>
 </head>
@@ -254,9 +272,40 @@ def _figure_to_html_document() -> str:
       Plotly.react(plot, fig.data || [], fig.layout || {{}}, {{
         displayModeBar: true,
         displaylogo: false,
-        scrollZoom: true
+        scrollZoom: true,
+        responsive: true
       }});
+      window.resizeMaskPreview();
+      window.setMaskOpacity(window.__maskOpacity ?? 1.0);
     }};
+
+    window.setMaskOpacity = function(opacity) {{
+      const plot = document.getElementById('plot');
+      if (!window.Plotly || !plot) return;
+      window.__maskOpacity = opacity;
+      const count = (plot.data || []).length;
+      const indices = Array.from({{length: count}}, (_, idx) => idx);
+      if (!indices.length) return;
+      Plotly.restyle(plot, {{opacity: opacity}}, indices);
+    }};
+
+    window.resizeMaskPreview = function() {{
+      const plot = document.getElementById('plot');
+      if (!window.Plotly || !plot) return;
+      Plotly.Plots.resize(plot);
+    }};
+
+    window.addEventListener('resize', function() {{
+      window.resizeMaskPreview();
+    }});
+
+    if (window.ResizeObserver) {{
+      const observer = new ResizeObserver(function() {{
+        window.resizeMaskPreview();
+      }});
+      observer.observe(document.body);
+      window._maskPreviewResizeObserver = observer;
+    }}
   </script>
 </body>
 </html>
@@ -271,6 +320,8 @@ def _write_html_document() -> str:
 
 
 class MaskVisualizationPane(QFrame):
+    doubleClicked = pyqtSignal()
+
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("maskVisualizationPanel")
@@ -278,24 +329,31 @@ class MaskVisualizationPane(QFrame):
         self.setMinimumHeight(260)
         self._html_path = _write_html_document()
         self._pending_payload: str | None = None
+        self._opacity = 1.0
         self._page_ready = False
 
         self._web_view = None
         if QWebEngineView is not None:
             try:
-                self._web_view = QWebEngineView()
+                self._web_view = _DoubleClickPlotlyView()
                 self._web_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 if QWebEnginePage is not None:
                     self._web_view.setPage(_QuietPlotlyPage(self._web_view))
                 self._web_view.loadFinished.connect(self._on_page_loaded)
                 self._web_view.load(QUrl.fromLocalFile(self._html_path))
+                self._web_view.doubleClicked.connect(self.doubleClicked.emit)
             except Exception:  # pragma: no cover - headless or webengine bootstrap failure
                 self._web_view = None
 
-        self.title_label = QLabel("3D Mask Preview")
+        self.title_label = _DoubleClickLabel("3D Mask Preview")
         self.title_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #edf2f7;")
+        self.title_label.doubleClicked.connect(self.doubleClicked.emit)
 
-        self.placeholder_label = QLabel("Load a CT and masks to preview them in 3D.")
+        self.hint_label = QLabel("Double-click the preview to expand or collapse.")
+        self.hint_label.setStyleSheet("font-size: 12px; color: #90a5bb;")
+        self.hint_label.setWordWrap(True)
+
+        self.placeholder_label = _DoubleClickLabel("Load a CT and masks to preview them in 3D.")
         self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.placeholder_label.setWordWrap(True)
         self.placeholder_label.setStyleSheet(
@@ -310,6 +368,7 @@ class MaskVisualizationPane(QFrame):
             }
             """
         )
+        self.placeholder_label.doubleClicked.connect(self.doubleClicked.emit)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.placeholder_label)
@@ -323,7 +382,16 @@ class MaskVisualizationPane(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(self.title_label)
+        layout.addWidget(self.hint_label)
         layout.addWidget(self.stack, 1)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.notify_resize()
 
     def clear_view(self) -> None:
         self.placeholder_label.setText("Load a CT and masks to preview them in 3D.")
@@ -361,6 +429,7 @@ class MaskVisualizationPane(QFrame):
 
         self.stack.setCurrentWidget(self._web_view)
         self._push_payload()
+        self._push_opacity()
 
     def _push_payload(self) -> None:
         if self._web_view is None or not self._pending_payload:
@@ -369,3 +438,23 @@ class MaskVisualizationPane(QFrame):
         payload = self._pending_payload
         self._pending_payload = None
         self._web_view.page().runJavaScript(f"window.renderMaskPreview({json.dumps(payload)});")
+        self._push_opacity()
+
+    def notify_resize(self) -> None:
+        if self._web_view is None or not self._page_ready:
+            return
+        self._web_view.page().runJavaScript("window.resizeMaskPreview && window.resizeMaskPreview();")
+
+    def set_opacity(self, value: float) -> None:
+        self._opacity = max(0.0, min(float(value), 1.0))
+        self._push_opacity()
+
+    def opacity(self) -> float:
+        return self._opacity
+
+    def _push_opacity(self) -> None:
+        if self._web_view is None or not self._page_ready:
+            return
+        self._web_view.page().runJavaScript(
+            f"window.setMaskOpacity && window.setMaskOpacity({self._opacity:.4f});"
+        )

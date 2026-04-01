@@ -20,6 +20,8 @@ def install_qt_message_filter() -> None:
             return
         if text.startswith("js: Canvas2D: Multiple readback operations using getImageData"):
             return
+        if text.startswith("Compositor returned null texture"):
+            return
         sys.__stderr__.write(text + "\n")
         sys.__stderr__.flush()
 
