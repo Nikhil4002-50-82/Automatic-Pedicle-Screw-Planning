@@ -245,7 +245,6 @@ class StudyRowWidget(QFrame):
                 """
             )
             self.label.setStyleSheet("color: #f4f9ff; font-weight: 700;")
-            self.remove_button.setStyleSheet("QToolButton#studyRemoveButton { color: #f4f9ff; }")
         else:
             self.setStyleSheet(
                 """
@@ -257,7 +256,6 @@ class StudyRowWidget(QFrame):
                 """
             )
             self.label.setStyleSheet("color: #dce7f3; font-weight: 600;")
-            self.remove_button.setStyleSheet("QToolButton#studyRemoveButton { color: #dce7f3; }")
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
