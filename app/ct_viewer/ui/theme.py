@@ -134,6 +134,32 @@ QComboBox, QListWidget {
     border-radius: 12px;
     padding: 6px;
 }
+QListWidget#studySwitcher {
+    padding: 6px;
+}
+QListWidget#studySwitcher::item {
+    padding: 8px 10px;
+    margin: 3px 2px;
+    border-radius: 8px;
+}
+QListWidget#studySwitcher::item:selected {
+    background: rgba(28, 64, 103, 0.92);
+}
+QToolButton#studyRemoveButton {
+    background: rgba(100, 34, 44, 0.0);
+    border: 1px solid rgba(255, 119, 136, 0.14);
+    border-radius: 12px;
+    color: #dce7f3;
+    font-size: 15px;
+    font-weight: 700;
+}
+QToolButton#studyRemoveButton:hover {
+    background: rgba(183, 50, 69, 0.28);
+    border-color: rgba(255, 119, 136, 0.44);
+}
+QToolButton#studyRemoveButton:pressed {
+    background: rgba(183, 50, 69, 0.42);
+}
 QComboBox::drop-down { border: none; }
 QSlider::groove:horizontal {
     background: #1f2e42;

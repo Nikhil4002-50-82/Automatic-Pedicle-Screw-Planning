@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import nibabel as nib
 
@@ -68,6 +69,39 @@ class CTVolume:
 class MaskLoadResult:
     layers: list[MaskLayer]
     warnings: list[str]
+
+
+@dataclass
+class ViewerStudy:
+    key: str
+    label: str
+    ct_volume: CTVolume | None = None
+    ct_zooms: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    mask_layers: list[MaskLayer] = field(default_factory=list)
+    current_indices: list[int] = field(default_factory=lambda: [0, 0, 0])
+    auto_window: tuple[int, int] = (300, 1500)
+    window_center: int = 300
+    window_width: int = 1500
+    window_preset: str = "Auto"
+    ct_intensity_summary: str = "Intensity range: unavailable"
+    ct_slice_cache: dict[tuple[object, ...], object] = field(default_factory=dict)
+    mask_slice_cache: dict[tuple[object, ...], object] = field(default_factory=dict)
+
+    @property
+    def display_label(self) -> str:
+        if self.label:
+            return self.label
+        if self.ct_volume is not None:
+            return Path(self.ct_volume.path).name
+        return "Mask-only study"
+
+    @property
+    def mask_count(self) -> int:
+        return len(self.mask_layers)
+
+    @property
+    def has_ct(self) -> bool:
+        return self.ct_volume is not None
 
 
 def clamp(value: int, lower: int, upper: int) -> int:

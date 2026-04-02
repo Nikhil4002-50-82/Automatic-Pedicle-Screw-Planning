@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import QFrame, QLabel, QSizePolicy, QSlider, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QLabel, QSizePolicy, QSlider, QToolButton, QVBoxLayout, QHBoxLayout, QWidget
 
 from .models import ORIENTATION_TITLES, clamp
 
@@ -193,3 +193,73 @@ class CollapsibleSection(QWidget):
 
     def addLayout(self, layout: QVBoxLayout) -> None:
         self.content_layout.addLayout(layout)
+
+
+class StudyRowWidget(QFrame):
+    clicked = pyqtSignal()
+    removeRequested = pyqtSignal()
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.setObjectName("studyRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(38)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 8, 6)
+        layout.setSpacing(8)
+
+        self.label = QLabel(text)
+        self.label.setWordWrap(False)
+        self.label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.label.setToolTip(text)
+
+        self.remove_button = QToolButton()
+        self.remove_button.setObjectName("studyRemoveButton")
+        self.remove_button.setText("×")
+        self.remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_button.setAutoRaise(True)
+        self.remove_button.setFixedSize(24, 24)
+        self.remove_button.clicked.connect(self.removeRequested.emit)
+
+        layout.addWidget(self.label, 1)
+        layout.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.set_active(False)
+
+    def set_text(self, text: str) -> None:
+        self.label.setText(text)
+        self.label.setToolTip(text)
+
+    def set_active(self, active: bool) -> None:
+        if active:
+            self.setStyleSheet(
+                """
+                QFrame#studyRow {
+                    background: rgba(28, 64, 103, 0.88);
+                    border: 1px solid rgba(91, 243, 255, 0.24);
+                    border-radius: 10px;
+                }
+                """
+            )
+            self.label.setStyleSheet("color: #f4f9ff; font-weight: 700;")
+            self.remove_button.setStyleSheet("QToolButton#studyRemoveButton { color: #f4f9ff; }")
+        else:
+            self.setStyleSheet(
+                """
+                QFrame#studyRow {
+                    background: rgba(13, 24, 40, 0.0);
+                    border: 1px solid rgba(35, 52, 72, 0.0);
+                    border-radius: 10px;
+                }
+                """
+            )
+            self.label.setStyleSheet("color: #dce7f3; font-weight: 600;")
+            self.remove_button.setStyleSheet("QToolButton#studyRemoveButton { color: #dce7f3; }")
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)

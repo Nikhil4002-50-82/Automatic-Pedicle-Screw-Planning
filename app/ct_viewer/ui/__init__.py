@@ -7,6 +7,7 @@ from .models import (
     SLICE_AXES,
     WINDOW_PRESETS,
     VolumeSummary,
+    ViewerStudy,
     clamp,
 )
 from .io import load_ct_volume, load_mask_layers, load_nifti_image, load_spatial_image, summarize_volume
@@ -22,7 +23,7 @@ from .rendering import (
 )
 from .mask_viz import MaskVisualizationPane, build_mask_preview_figure
 from .recents import RecentStudiesStore, RecentStudy
-from .widgets import CollapsibleSection, SliceCanvas, SliceView
+from .widgets import CollapsibleSection, SliceCanvas, SliceView, StudyRowWidget
 
 __all__ = [
     "CTVolume",
@@ -33,6 +34,7 @@ __all__ = [
     "SLICE_AXES",
     "WINDOW_PRESETS",
     "VolumeSummary",
+    "ViewerStudy",
     "clamp",
     "load_ct_volume",
     "load_mask_layers",
@@ -53,5 +55,6 @@ __all__ = [
     "RecentStudy",
     "SliceCanvas",
     "SliceView",
+    "StudyRowWidget",
     "CollapsibleSection",
 ]

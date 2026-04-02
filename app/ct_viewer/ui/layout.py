@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -169,6 +170,13 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.volume_info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     viewer.volume_info_label.setMinimumHeight(74)
 
+    viewer.study_list = QListWidget()
+    viewer.study_list.setObjectName("studySwitcher")
+    viewer.study_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    viewer.study_list.setMinimumHeight(92)
+    viewer.study_list.setMaximumHeight(152)
+    viewer.study_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
     viewer.window_preset_combo = QComboBox()
     viewer.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
 
@@ -226,6 +234,9 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     content_layout.addWidget(title)
     content_layout.addWidget(subtitle)
     content_layout.addWidget(viewer.volume_info_label)
+    viewer.study_section = ct_widgets.CollapsibleSection("Studies", expanded=False)
+    viewer.study_section.content_layout.addWidget(viewer.study_list)
+    content_layout.addWidget(viewer.study_section)
     content_layout.addWidget(import_section)
     content_layout.addWidget(window_section)
     content_layout.addWidget(viewer.masks_section)
@@ -244,6 +255,7 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.overlay_opacity_slider.valueChanged.connect(viewer.on_overlay_opacity_changed)
     viewer.crosshair_checkbox.toggled.connect(lambda _: viewer.render_all_views())
     viewer.mask_list.itemChanged.connect(viewer.on_mask_item_changed)
+    viewer.study_list.currentRowChanged.connect(viewer.on_study_selected)
 
     mask_menu = QMenu(viewer)
     mask_menu.setObjectName("maskPopupMenu")

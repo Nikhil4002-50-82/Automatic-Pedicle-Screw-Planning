@@ -31,6 +31,7 @@ if __package__ in {None, ""}:
         ORIENTATION_TITLES,
         SLICE_AXES,
         WINDOW_PRESETS,
+        ViewerStudy,
         clamp,
     )
     from ct_viewer.ui.recents import RecentStudy, RecentStudiesStore  # noqa: E402
@@ -49,6 +50,7 @@ else:
         ORIENTATION_TITLES,
         SLICE_AXES,
         WINDOW_PRESETS,
+        ViewerStudy,
         clamp,
     )
     from .ui.recents import RecentStudy, RecentStudiesStore  # noqa: E402
@@ -69,6 +71,8 @@ class CTMaskViewer(QMainWindow):
         self.ct_intensity_summary = "Intensity range: unavailable"
         self.ct_slice_cache: dict[tuple[str, int], np.ndarray] = {}
         self.mask_slice_cache: dict[tuple[int, str, int], np.ndarray] = {}
+        self.studies: list[ViewerStudy] = []
+        self.active_study_index: int | None = None
         self._ct_thread: QThread | None = None
         self._mask_thread: QThread | None = None
         self._ct_worker: CTLoadWorker | None = None
@@ -94,8 +98,14 @@ class CTMaskViewer(QMainWindow):
         if getattr(self, "_mask_visualizer_expanded", False):
             self._set_mask_visualizer_expanded(False)
         self.hide_loading_overlay()
+        self.studies = []
+        self.active_study_index = None
         self.ct_volume = None
+        self.ct_zooms = (1.0, 1.0, 1.0)
         self.mask_layers = []
+        self.current_indices = [0, 0, 0]
+        self.auto_window = (300, 1500)
+        self.ct_intensity_summary = "Intensity range: unavailable"
         self.ct_slice_cache.clear()
         self.mask_slice_cache.clear()
         self.volume_info_label.setText("No CT loaded")
@@ -107,6 +117,18 @@ class CTMaskViewer(QMainWindow):
             self.mask_viz.clear_view()
         self._mask_preview_needs_refresh = False
         self.mask_list.clear()
+        if hasattr(self, "study_list"):
+            self.study_list.clear()
+            placeholder = QListWidgetItem("No studies loaded")
+            flags = placeholder.flags()
+            flags &= ~Qt.ItemFlag.ItemIsSelectable
+            flags &= ~Qt.ItemFlag.ItemIsEnabled
+            placeholder.setFlags(flags)
+            self.study_list.addItem(placeholder)
+        if hasattr(self, "study_section"):
+            self.study_section.toggle_button.setText("Studies")
+            if self.study_section.toggle_button.isChecked():
+                self.study_section.toggle_button.setChecked(False)
         if hasattr(self, "masks_section") and self.masks_section.toggle_button.isChecked():
             self.masks_section.toggle_button.setChecked(False)
         self.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -117,6 +139,222 @@ class CTMaskViewer(QMainWindow):
         self.window_preset_combo.setEnabled(False)
         self._set_loading_state("Load a CT file or DICOM folder to begin.", busy=False)
         self.refresh_recent_studies_menu()
+
+    def _active_study(self) -> ViewerStudy | None:
+        if self.active_study_index is None:
+            return None
+        if self.active_study_index < 0 or self.active_study_index >= len(self.studies):
+            return None
+        return self.studies[self.active_study_index]
+
+    def _study_key_for_ct(self, path: str) -> str:
+        return f"ct:{os.path.normcase(os.path.abspath(path))}"
+
+    def _study_key_for_masks(self, paths: list[str] | tuple[str, ...]) -> str:
+        normalized = [os.path.normcase(os.path.abspath(path)) for path in paths]
+        unique = sorted(dict.fromkeys(normalized))
+        joined = "|".join(unique) if unique else "empty"
+        return f"mask:{joined}"
+
+    def _find_study_index_by_ct_path(self, path: str) -> int | None:
+        key = self._study_key_for_ct(path)
+        for index, study in enumerate(self.studies):
+            if study.key == key:
+                return index
+        return None
+
+    def _study_label(self, study: ViewerStudy) -> str:
+        if study.ct_volume is not None:
+            return Path(study.ct_volume.path).name
+        if study.mask_layers:
+            return f"Mask-only: {Path(study.mask_layers[0].path).name}"
+        return "Mask-only study"
+
+    def _study_item_text(self, study: ViewerStudy) -> str:
+        return f"{study.display_label}  ·  {study.mask_count} mask(s)"
+
+    def _study_item_tooltip(self, study: ViewerStudy) -> str:
+        lines = [f"Study: {study.display_label}", f"Masks: {study.mask_count}"]
+        if study.ct_volume is not None:
+            lines.insert(1, f"CT: {study.ct_volume.path}")
+        else:
+            lines.insert(1, "CT: none")
+        if study.mask_layers:
+            lines.append("")
+            lines.append("Masks:")
+            lines.extend(f"  - {layer.path}" for layer in study.mask_layers)
+        return "\n".join(lines)
+
+    def _study_row_text(self, study: ViewerStudy) -> str:
+        return f"{study.display_label} | {study.mask_count} mask(s)"
+
+    def _bind_study(self, study: ViewerStudy | None) -> None:
+        if study is None:
+            self.ct_volume = None
+            self.ct_zooms = (1.0, 1.0, 1.0)
+            self.mask_layers = []
+            self.current_indices = [0, 0, 0]
+            self.auto_window = (300, 1500)
+            self.ct_intensity_summary = "Intensity range: unavailable"
+            self.ct_slice_cache = {}
+            self.mask_slice_cache = {}
+            return
+
+        self.ct_volume = study.ct_volume
+        self.ct_zooms = study.ct_zooms
+        self.mask_layers = study.mask_layers
+        self.current_indices = study.current_indices
+        self.auto_window = study.auto_window
+        self.ct_intensity_summary = study.ct_intensity_summary
+        self.ct_slice_cache = study.ct_slice_cache
+        self.mask_slice_cache = study.mask_slice_cache
+
+    def _save_active_study_state(self) -> None:
+        study = self._active_study()
+        if study is None:
+            return
+
+        study.ct_volume = self.ct_volume
+        study.ct_zooms = self.ct_zooms
+        study.mask_layers = self.mask_layers
+        study.current_indices = self.current_indices
+        study.auto_window = self.auto_window
+        study.ct_intensity_summary = self.ct_intensity_summary
+        study.ct_slice_cache = self.ct_slice_cache
+        study.mask_slice_cache = self.mask_slice_cache
+        if hasattr(self, "window_center_slider"):
+            study.window_center = self.window_center_slider.value()
+        if hasattr(self, "window_width_slider"):
+            study.window_width = self.window_width_slider.value()
+        if hasattr(self, "window_preset_combo"):
+            study.window_preset = self.window_preset_combo.currentText()
+
+    def _refresh_study_switcher(self) -> None:
+        if not hasattr(self, "study_list"):
+            return
+
+        self.study_list.blockSignals(True)
+        self.study_list.clear()
+        if not self.studies:
+            placeholder = QListWidgetItem("No studies loaded")
+            flags = placeholder.flags()
+            flags &= ~Qt.ItemFlag.ItemIsSelectable
+            flags &= ~Qt.ItemFlag.ItemIsEnabled
+            placeholder.setFlags(flags)
+            self.study_list.addItem(placeholder)
+        else:
+            for index, study in enumerate(self.studies):
+                row_widget = ct_widgets.StudyRowWidget(self._study_row_text(study))
+                row_widget.clicked.connect(lambda _=False, current=index: self.study_list.setCurrentRow(current))
+                row_widget.removeRequested.connect(lambda _=False, current=index: self.remove_study(current))
+                row_widget.set_active(index == self.active_study_index)
+
+                item = QListWidgetItem()
+                item.setToolTip(self._study_item_tooltip(study))
+                item.setData(Qt.ItemDataRole.UserRole, index)
+                item.setSizeHint(row_widget.sizeHint())
+                self.study_list.addItem(item)
+                self.study_list.setItemWidget(item, row_widget)
+            if self.active_study_index is not None and 0 <= self.active_study_index < len(self.studies):
+                self.study_list.setCurrentRow(self.active_study_index)
+        self.study_list.blockSignals(False)
+
+        if hasattr(self, "study_section"):
+            self.study_section.toggle_button.setText(f"Studies ({len(self.studies)})" if self.studies else "Studies")
+            if len(self.studies) > 1 and not self.study_section.toggle_button.isChecked():
+                self.study_section.toggle_button.setChecked(True)
+
+    def _invalidate_mask_preview(self) -> None:
+        self._mask_preview_generation += 1
+        self._mask_preview_needs_refresh = False
+
+    def _apply_study_window_state(self, study: ViewerStudy) -> None:
+        if study.ct_volume is None:
+            self.window_center_slider.setEnabled(False)
+            self.window_width_slider.setEnabled(False)
+            self.overlay_opacity_slider.setEnabled(True)
+            self.crosshair_checkbox.setEnabled(False)
+            self.window_preset_combo.setEnabled(False)
+            return
+
+        self.window_center_slider.blockSignals(True)
+        self.window_width_slider.blockSignals(True)
+        self.window_preset_combo.blockSignals(True)
+        self.window_center_slider.setValue(clamp(study.window_center, self.window_center_slider.minimum(), self.window_center_slider.maximum()))
+        self.window_width_slider.setValue(clamp(study.window_width, self.window_width_slider.minimum(), self.window_width_slider.maximum()))
+        if self.window_preset_combo.findText(study.window_preset) >= 0:
+            self.window_preset_combo.setCurrentText(study.window_preset)
+        else:
+            self.window_preset_combo.setCurrentText("Custom")
+        self.window_center_value.setText(str(self.window_center_slider.value()))
+        self.window_width_value.setText(str(self.window_width_slider.value()))
+        self.window_center_slider.blockSignals(False)
+        self.window_width_slider.blockSignals(False)
+        self.window_preset_combo.blockSignals(False)
+        self.window_center_slider.setEnabled(True)
+        self.window_width_slider.setEnabled(True)
+        self.overlay_opacity_slider.setEnabled(True)
+        self.crosshair_checkbox.setEnabled(True)
+        self.window_preset_combo.setEnabled(True)
+
+    def _set_active_study_index(self, index: int) -> None:
+        if index < 0 or index >= len(self.studies):
+            return
+        if self.active_study_index == index:
+            self._refresh_study_switcher()
+            return
+
+        self._save_active_study_state()
+        self.active_study_index = index
+        study = self.studies[index]
+        self._bind_study(study)
+        if self.ct_volume is not None:
+            self._configure_window_controls()
+        self._apply_study_window_state(study)
+        self.refresh_mask_list()
+        self.update_volume_info()
+        self._refresh_study_switcher()
+        self._invalidate_mask_preview()
+
+        if self.ct_volume is None:
+            for view in self.views.values():
+                view.clear_view()
+            self.cursor_info_label.setText(f"Mask-only mode: {len(self.mask_layers)} mask(s) loaded")
+            if self.mask_layers:
+                self._set_mask_visualizer_expanded(True)
+            self.refresh_mask_visualization()
+        else:
+            self._configure_slice_views()
+            self.render_all_views()
+            self.refresh_mask_visualization()
+
+    def remove_study(self, index: int) -> None:
+        if index < 0 or index >= len(self.studies):
+            return
+
+        was_active = index == self.active_study_index
+        if was_active:
+            self._save_active_study_state()
+
+        self.studies.pop(index)
+
+        if not self.studies:
+            self.clear_viewer()
+            return
+
+        if self.active_study_index is None:
+            new_index = 0
+        elif index < self.active_study_index:
+            new_index = self.active_study_index - 1
+        elif index == self.active_study_index:
+            new_index = min(index, len(self.studies) - 1)
+        else:
+            new_index = self.active_study_index
+
+        self.active_study_index = None
+        self._set_active_study_index(new_index)
+        self._refresh_study_switcher()
+        self.statusBar().showMessage("Removed study.", 4000)
 
     def toggle_mask_visualizer_expanded(self) -> None:
         self._set_mask_visualizer_expanded(not getattr(self, "_mask_visualizer_expanded", False))
@@ -201,6 +439,18 @@ class CTMaskViewer(QMainWindow):
             self.refresh_recent_studies_menu()
             return
 
+        existing_index = self._find_study_index_by_ct_path(study.ct_path)
+        if existing_index is not None:
+            self._set_active_study_index(existing_index)
+            current_masks = {os.path.normcase(os.path.abspath(layer.path)) for layer in self.mask_layers}
+            recent_masks = [path for path in study.mask_paths if Path(path).exists()]
+            if recent_masks:
+                unique_recent_masks = [path for path in recent_masks if os.path.normcase(os.path.abspath(path)) not in current_masks]
+                if unique_recent_masks:
+                    self.load_masks_async(unique_recent_masks)
+            self.statusBar().showMessage(f"Switched to recent study: {ct_path.name}", 4000)
+            return
+
         self._pending_recent_mask_paths = [path for path in study.mask_paths if Path(path).exists()]
         self.show_loading_overlay("Restoring recent study...")
         self._set_loading_state(f"Restoring recent study: {ct_path.name}", busy=True)
@@ -253,6 +503,12 @@ class CTMaskViewer(QMainWindow):
         if self._ct_thread is not None:
             return
 
+        existing_index = self._find_study_index_by_ct_path(path)
+        if existing_index is not None:
+            self._set_active_study_index(existing_index)
+            self.statusBar().showMessage(f"Switched to loaded CT: {Path(path).name}", 4000)
+            return
+
         self._set_loading_state("Loading CT...", busy=True)
         thread = QThread(self)
         worker = CTLoadWorker(path)
@@ -280,6 +536,16 @@ class CTMaskViewer(QMainWindow):
             self.statusBar().showMessage("All selected masks are already loaded.", 4000)
             return
 
+        if self._active_study() is None:
+            placeholder = ViewerStudy(
+                key=self._study_key_for_masks(unique_paths),
+                label="Mask-only study",
+            )
+            self.studies.append(placeholder)
+            self.active_study_index = len(self.studies) - 1
+            self._bind_study(placeholder)
+            self._refresh_study_switcher()
+
         self.show_loading_overlay("Loading masks and preparing overlays...")
         self._set_loading_state("Loading masks...", busy=True)
         thread = QThread(self)
@@ -303,10 +569,15 @@ class CTMaskViewer(QMainWindow):
         if not self.mask_layers:
             return
 
-        self.mask_layers = []
+        self.mask_layers.clear()
         self.mask_slice_cache.clear()
+        self._save_active_study_state()
+        active_study = self._active_study()
+        if active_study is not None:
+            active_study.label = self._study_label(active_study)
         self.refresh_mask_list()
         self.update_volume_info()
+        self._refresh_study_switcher()
         self.render_all_views()
         self.refresh_mask_visualization()
         if hasattr(self, "masks_section") and self.masks_section.toggle_button.isChecked():
@@ -314,32 +585,23 @@ class CTMaskViewer(QMainWindow):
         self.statusBar().showMessage("Cleared all masks.", 4000)
 
     def _on_ct_loaded(self, volume: CTVolume) -> None:
-        self.ct_volume = volume
-        self.ct_zooms = volume.zooms
-        self.mask_layers = []
-        self.ct_slice_cache.clear()
-        self.mask_slice_cache.clear()
-        self.current_indices = [dimension // 2 for dimension in volume.shape]
-        self.ct_intensity_summary = (
-            f"Intensity range: {volume.summary.minimum:.1f} to {volume.summary.maximum:.1f}"
+        study = ViewerStudy(
+            key=self._study_key_for_ct(volume.path),
+            label=Path(volume.path).name,
+            ct_volume=volume,
+            ct_zooms=volume.zooms,
+            current_indices=[dimension // 2 for dimension in volume.shape],
+            auto_window=(
+                int(round((volume.summary.low_percentile + volume.summary.high_percentile) / 2.0)),
+                int(round(max(volume.summary.high_percentile - volume.summary.low_percentile, 1.0))),
+            ),
+            window_center=int(round((volume.summary.low_percentile + volume.summary.high_percentile) / 2.0)),
+            window_width=int(round(max(volume.summary.high_percentile - volume.summary.low_percentile, 1.0))),
+            window_preset="Auto",
+            ct_intensity_summary=f"Intensity range: {volume.summary.minimum:.1f} to {volume.summary.maximum:.1f}",
         )
-
-        self._configure_window_controls()
-        self._configure_slice_views()
-        self.refresh_mask_list()
-        self.update_volume_info()
-        self.render_all_views()
-        self.refresh_mask_visualization()
-
-        pending_masks = self._pending_recent_mask_paths
-        self._pending_recent_mask_paths = None
-        if pending_masks:
-            self.load_masks_async(pending_masks)
-            return
-
-        self._remember_current_study()
-        self._set_loading_state(f"Loaded CT: {Path(volume.path).name}", busy=False)
-        self.hide_loading_overlay()
+        self.studies.append(study)
+        self._set_active_study_index(len(self.studies) - 1)
 
         if volume.summary.is_constant:
             QMessageBox.warning(
@@ -352,15 +614,29 @@ class CTMaskViewer(QMainWindow):
                 ),
             )
 
+        pending_masks = self._pending_recent_mask_paths
+        self._pending_recent_mask_paths = None
+        if pending_masks:
+            self.load_masks_async(pending_masks)
+            return
+
+        self._remember_current_study()
+        self._set_loading_state(f"Loaded CT: {Path(volume.path).name}", busy=False)
+        self.hide_loading_overlay()
+
     def _on_masks_loaded(self, result: MaskLoadResult) -> None:
         if result.layers:
             self.mask_layers.extend(result.layers)
             self.mask_slice_cache.clear()
+            active_study = self._active_study()
+            if active_study is not None:
+                active_study.label = self._study_label(active_study)
             focused_indices = focus_indices_from_masks(self.ct_volume.shape, result.layers) if self.ct_volume is not None else None
             if focused_indices is not None:
-                self.current_indices = focused_indices
+                self.current_indices[:] = focused_indices
             self.refresh_mask_list()
             self.update_volume_info()
+            self._refresh_study_switcher()
             self.render_all_views()
             self.refresh_mask_visualization()
             if self.ct_volume is None:
@@ -398,17 +674,20 @@ class CTMaskViewer(QMainWindow):
         self.add_masks_button.setEnabled(not busy and self._mask_thread is None)
         self.reset_view_button.setEnabled(not busy and self.ct_volume is not None)
         self.clear_masks_button.setEnabled(not busy and bool(self.mask_layers))
+        if hasattr(self, "study_list"):
+            self.study_list.setEnabled(not busy and bool(self.studies))
         self.statusBar().showMessage(message)
 
     def reset_view_state(self) -> None:
         if self.ct_volume is None:
             return
 
-        self.current_indices = [dimension // 2 for dimension in self.ct_volume.shape]
+        self.current_indices[:] = [dimension // 2 for dimension in self.ct_volume.shape]
         self.ct_slice_cache.clear()
         self.mask_slice_cache.clear()
         self.apply_window_preset("Auto")
         self.render_all_views()
+        self._save_active_study_state()
         self.statusBar().showMessage("Reset slices and windowing.", 4000)
 
     def _configure_window_controls(self) -> None:
@@ -426,6 +705,9 @@ class CTMaskViewer(QMainWindow):
             int(round((summary.low_percentile + summary.high_percentile) / 2.0)),
             int(round(max(summary.high_percentile - summary.low_percentile, 1.0))),
         )
+        active_study = self._active_study()
+        if active_study is not None:
+            active_study.auto_window = self.auto_window
 
         self.window_center_slider.setRange(slider_center_min, slider_center_max)
         self.window_width_slider.setRange(1, slider_width_max)
@@ -434,7 +716,6 @@ class CTMaskViewer(QMainWindow):
         self.overlay_opacity_slider.setEnabled(True)
         self.crosshair_checkbox.setEnabled(True)
         self.window_preset_combo.setEnabled(True)
-        self.apply_window_preset("Auto")
 
     def _configure_slice_views(self) -> None:
         if self.ct_volume is None:
@@ -509,6 +790,11 @@ class CTMaskViewer(QMainWindow):
         self.render_all_views()
         self.refresh_mask_visualization()
 
+    def on_study_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self.studies):
+            return
+        self._set_active_study_index(row)
+
     def apply_window_preset(self, preset_name: str) -> None:
         if self.ct_volume is None or self._window_control_lock:
             return
@@ -532,6 +818,7 @@ class CTMaskViewer(QMainWindow):
         self.window_width_value.setText(str(self.window_width_slider.value()))
         self._window_control_lock = False
         self.render_all_views()
+        self._save_active_study_state()
 
     def on_window_slider_changed(self) -> None:
         if self.ct_volume is None:
@@ -546,6 +833,7 @@ class CTMaskViewer(QMainWindow):
             self._window_control_lock = False
 
         self.render_all_views()
+        self._save_active_study_state()
 
     def on_overlay_opacity_changed(self, value: int) -> None:
         self.overlay_opacity_value.setText(f"{value}%")
@@ -704,7 +992,8 @@ class CTMaskViewer(QMainWindow):
         if not np.isfinite(ct_slice).all():
             ct_slice = np.nan_to_num(ct_slice, copy=False)
 
-        self.ct_slice_cache = {cache_key: ct_slice}
+        self.ct_slice_cache.clear()
+        self.ct_slice_cache[cache_key] = ct_slice
         return ct_slice
 
     def _get_mask_slice(self, layer_index: int, layer: MaskLayer, orientation: str) -> np.ndarray:
