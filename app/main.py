@@ -2,7 +2,7 @@ import os
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
 from geometryV4 import run_planner
-from visualizerV3 import visualize_surgical_plan
+from visualizerV5 import visualize_surgical_plan
 def main():
     # Get current folder
     baseDir=os.path.dirname(os.path.abspath(__file__))
