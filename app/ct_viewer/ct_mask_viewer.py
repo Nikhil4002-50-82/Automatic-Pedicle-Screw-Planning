@@ -38,7 +38,7 @@ if __package__ in {None, ""}:
     )
     from ct_viewer.ui.recents import RecentStudy, RecentStudiesStore  # noqa: E402
     from ct_viewer.ui.runtime import install_qt_message_filter  # noqa: E402
-    from ct_viewer.ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker  # noqa: E402
+    from ct_viewer.ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker, StudyRenderWorker  # noqa: E402
     from ct_viewer.ui.theme import apply_styles as apply_viewer_styles  # noqa: E402
 else:
     from .ui import layout as ct_layout  # noqa: E402
@@ -59,7 +59,7 @@ else:
     )
     from .ui.recents import RecentStudy, RecentStudiesStore  # noqa: E402
     from .ui.runtime import install_qt_message_filter  # noqa: E402
-    from .ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker  # noqa: E402
+    from .ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker, StudyRenderWorker  # noqa: E402
     from .ui.theme import apply_styles as apply_viewer_styles  # noqa: E402
 
 
@@ -83,8 +83,12 @@ class CTMaskViewer(QMainWindow):
         self._mask_worker: MaskLoadWorker | None = None
         self._mask_preview_thread: QThread | None = None
         self._mask_preview_worker: MaskPreviewWorker | None = None
+        self._view_render_thread: QThread | None = None
+        self._view_render_worker: StudyRenderWorker | None = None
         self._mask_preview_generation = 0
         self._mask_preview_needs_refresh = False
+        self._view_render_generation = 0
+        self._view_render_needs_refresh = False
         self._window_control_lock = False
         self._pending_recent_mask_paths: list[str] | None = None
         self.recents_store = RecentStudiesStore()
@@ -112,6 +116,9 @@ class CTMaskViewer(QMainWindow):
         self.ct_intensity_summary = "Intensity range: unavailable"
         self.ct_slice_cache.clear()
         self.mask_slice_cache.clear()
+        self._view_render_generation += 1
+        self._view_render_needs_refresh = False
+        self._mask_preview_generation += 1
         self.volume_info_label.setText("No CT loaded")
         self.cursor_info_label.setText("Voxel: -, -, -    HU: -")
         self._pending_recent_mask_paths = None
@@ -325,7 +332,7 @@ class CTMaskViewer(QMainWindow):
         self.crosshair_checkbox.setEnabled(True)
         self.window_preset_combo.setEnabled(True)
 
-    def _set_active_study_index(self, index: int) -> None:
+    def _set_active_study_index(self, index: int, refresh_views: bool = True, refresh_preview: bool = True) -> None:
         if index < 0 or index >= len(self.studies):
             return
         if self.active_study_index == index:
@@ -347,14 +354,19 @@ class CTMaskViewer(QMainWindow):
             self.cursor_info_label.setText(f"Mask-only mode: {len(self.mask_layers)} mask(s) loaded")
             if self.mask_layers:
                 self._set_mask_visualizer_expanded(True)
-        else:
+        elif refresh_views:
             self._configure_slice_views()
             if not self._restore_cached_views(study):
                 self.render_all_views()
+        else:
+            self._configure_slice_views()
+            for view in self.views.values():
+                view.clear_view()
 
         self.update_volume_info()
         self._update_cursor_info()
-        self.refresh_mask_visualization()
+        if refresh_preview:
+            self.refresh_mask_visualization()
 
     def remove_study(self, index: int) -> None:
         if index < 0 or index >= len(self.studies):
@@ -630,7 +642,8 @@ class CTMaskViewer(QMainWindow):
             ct_intensity_summary=f"Intensity range: {volume.summary.minimum:.1f} to {volume.summary.maximum:.1f}",
         )
         self.studies.append(study)
-        self._set_active_study_index(len(self.studies) - 1)
+        pending_masks = self._pending_recent_mask_paths
+        self._set_active_study_index(len(self.studies) - 1, refresh_views=not pending_masks, refresh_preview=not pending_masks)
 
         if volume.summary.is_constant:
             QMessageBox.warning(
@@ -643,7 +656,6 @@ class CTMaskViewer(QMainWindow):
                 ),
             )
 
-        pending_masks = self._pending_recent_mask_paths
         self._pending_recent_mask_paths = None
         if pending_masks:
             self.load_masks_async(pending_masks)
@@ -925,6 +937,10 @@ class CTMaskViewer(QMainWindow):
         if self.ct_volume is None:
             return
 
+        if self._view_render_thread is not None:
+            self._view_render_needs_refresh = True
+            return
+
         center = self.window_center_slider.value()
         width = self.window_width_slider.value()
         if getattr(self, "_mask_visualizer_expanded", False) and hasattr(self, "expanded_overlay_opacity_slider"):
@@ -932,25 +948,114 @@ class CTMaskViewer(QMainWindow):
         else:
             opacity = self.overlay_opacity_slider.value() / 100.0
 
-        active_study = self._active_study()
+        generation = self._view_render_generation + 1
+        self._view_render_generation = generation
+        self._view_render_needs_refresh = False
 
+        thread = QThread(self)
+        worker = StudyRenderWorker(
+            generation,
+            self.ct_volume,
+            self.mask_layers,
+            self.current_indices,
+            center,
+            width,
+            opacity,
+        )
+        self._view_render_thread = thread
+        self._view_render_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_view_render_ready)
+        worker.failed.connect(self._on_worker_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_view_render_thread)
+        thread.start()
+
+    def _on_view_render_ready(self, generation: int, payload: object) -> None:
+        if generation != self._view_render_generation or not isinstance(payload, dict) or not hasattr(self, "views"):
+            return
+
+        active_study = self._active_study()
         for orientation, view in self.views.items():
-            pixmap, logical_size = self._render_view(orientation, center, width, opacity)
-            axis = SLICE_AXES[orientation]
-            slice_index = self.current_indices[axis]
+            data = payload.get(orientation)
+            if not isinstance(data, dict):
+                continue
+
+            rgba = data.get("rgba")
+            logical_size = data.get("logical_size")
+            target_size = data.get("target_size")
+            footer = data.get("footer")
+            slice_index = data.get("slice_index")
+            render_indices = data.get("indices")
+            if not isinstance(rgba, np.ndarray):
+                continue
+            if not (isinstance(logical_size, tuple) and len(logical_size) == 2):
+                continue
+            if not (isinstance(target_size, tuple) and len(target_size) == 2):
+                continue
+            if not isinstance(footer, str) or not isinstance(slice_index, int):
+                continue
+            if not (isinstance(render_indices, tuple) and len(render_indices) == 3):
+                render_indices = tuple(self.current_indices)
+
+            image = ct_rendering.qimage_from_rgba(rgba)
+            if self.crosshair_checkbox.isChecked():
+                cross_x, cross_y = ct_rendering.crosshair_position(self.ct_volume.shape, orientation, list(render_indices))
+                painter = QPainter(image)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                pen = QPen(QColor("#44d7ff"))
+                pen.setWidth(1)
+                painter.setPen(pen)
+                painter.drawLine(cross_x, 0, cross_x, image.height() - 1)
+                painter.drawLine(0, cross_y, image.width() - 1, cross_y)
+                left_label, right_label, top_label, bottom_label = ct_rendering.orientation_labels(orientation)
+                painter.setPen(QPen(QColor("#f7fbff")))
+                painter.drawText(12, image.height() // 2, left_label)
+                painter.drawText(image.width() - 22, image.height() // 2, right_label)
+                painter.drawText(image.width() // 2 - 6, 20, top_label)
+                painter.drawText(image.width() // 2 - 6, image.height() - 12, bottom_label)
+                painter.end()
+
+            pixmap = QPixmap.fromImage(image)
+            if target_size[0] != image.width() or target_size[1] != image.height():
+                pixmap = pixmap.scaled(
+                    target_size[0],
+                    target_size[1],
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation,
+                )
+
             view.set_slice_index(slice_index)
             view.set_image(pixmap, logical_size)
-            view.set_footer(f"Slice {slice_index + 1} / {self.ct_volume.shape[axis]}")
+            view.set_footer(footer)
 
             if active_study is not None:
                 active_study.rendered_views[orientation] = StudyRenderSnapshot(
                     pixmap=QPixmap(pixmap),
                     logical_size=logical_size,
-                    footer=f"Slice {slice_index + 1} / {self.ct_volume.shape[axis]}",
+                    footer=footer,
                     slice_index=slice_index,
                 )
 
         self._update_cursor_info()
+        self._view_render_needs_refresh = False
+        if self._mask_preview_thread is None and not self._mask_preview_needs_refresh:
+            QTimer.singleShot(120, self.hide_loading_overlay)
+
+    def _clear_view_render_thread(self) -> None:
+        self._view_render_thread = None
+        self._view_render_worker = None
+        if self._view_render_needs_refresh and self.ct_volume is not None:
+            self._view_render_needs_refresh = False
+            QTimer.singleShot(0, self.render_all_views)
+            return
+        if self._mask_preview_thread is None and not self._mask_preview_needs_refresh:
+            QTimer.singleShot(120, self.hide_loading_overlay)
 
     def refresh_mask_visualization(self) -> None:
         if not hasattr(self, "mask_viz"):
@@ -1019,6 +1124,8 @@ class CTMaskViewer(QMainWindow):
         if self._mask_preview_needs_refresh and self.ct_volume is not None and any(layer.visible for layer in self.mask_layers):
             self._mask_preview_needs_refresh = False
             QTimer.singleShot(0, self.refresh_mask_visualization)
+            return
+        if self._view_render_thread is not None or self._view_render_needs_refresh:
             return
         QTimer.singleShot(120, self.hide_loading_overlay)
 
