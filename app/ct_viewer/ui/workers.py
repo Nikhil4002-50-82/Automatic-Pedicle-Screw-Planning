@@ -46,14 +46,23 @@ class MaskLoadWorker(QObject):
 
 
 class MaskPreviewWorker(QObject):
-    finished = pyqtSignal(int, object)
+    finished = pyqtSignal(int, object, object, int)
     failed = pyqtSignal(str, str)
 
-    def __init__(self, generation: int, ct_volume: CTVolume | None, layers: list[MaskLayer]) -> None:
+    def __init__(
+        self,
+        generation: int,
+        ct_volume: CTVolume | None,
+        layers: list[MaskLayer],
+        signature: tuple[str, ...],
+        visible_mask_count: int,
+    ) -> None:
         super().__init__()
         self.generation = generation
         self.ct_volume = ct_volume
         self.layers = layers
+        self.signature = signature
+        self.visible_mask_count = visible_mask_count
 
     def run(self) -> None:
         try:
@@ -63,4 +72,4 @@ class MaskPreviewWorker(QObject):
             self.failed.emit("Could not build 3D mask preview", str(exc))
             return
 
-        self.finished.emit(self.generation, payload)
+        self.finished.emit(self.generation, payload, self.signature, self.visible_mask_count)

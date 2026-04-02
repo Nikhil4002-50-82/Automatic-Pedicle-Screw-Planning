@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import nibabel as nib
+from PyQt6.QtGui import QPixmap
 
 WINDOW_PRESETS = {
     "Auto": None,
@@ -72,6 +73,14 @@ class MaskLoadResult:
 
 
 @dataclass
+class StudyRenderSnapshot:
+    pixmap: QPixmap
+    logical_size: tuple[int, int]
+    footer: str
+    slice_index: int
+
+
+@dataclass
 class ViewerStudy:
     key: str
     label: str
@@ -86,6 +95,10 @@ class ViewerStudy:
     ct_intensity_summary: str = "Intensity range: unavailable"
     ct_slice_cache: dict[tuple[object, ...], object] = field(default_factory=dict)
     mask_slice_cache: dict[tuple[object, ...], object] = field(default_factory=dict)
+    rendered_views: dict[str, StudyRenderSnapshot] = field(default_factory=dict)
+    mask_preview_json: dict[str, object] | None = None
+    mask_preview_visible_count: int = 0
+    mask_preview_signature: tuple[str, ...] | None = None
 
     @property
     def display_label(self) -> str:

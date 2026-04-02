@@ -8,6 +8,7 @@ from .models import (
     WINDOW_PRESETS,
     VolumeSummary,
     ViewerStudy,
+    StudyRenderSnapshot,
     clamp,
 )
 from .io import load_ct_volume, load_mask_layers, load_nifti_image, load_spatial_image, summarize_volume
@@ -35,6 +36,7 @@ __all__ = [
     "WINDOW_PRESETS",
     "VolumeSummary",
     "ViewerStudy",
+    "StudyRenderSnapshot",
     "clamp",
     "load_ct_volume",
     "load_mask_layers",

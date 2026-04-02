@@ -12,10 +12,10 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QTreeWidgetItem,
+    QToolButton,
 )
 
 if __package__ in {None, ""}:
@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
     from ct_viewer.ui import layout as ct_layout  # noqa: E402
     from ct_viewer.ui import rendering as ct_rendering  # noqa: E402
     from ct_viewer.ui.focus import focus_indices_from_masks  # noqa: E402
+    from ct_viewer.ui import widgets as ct_widgets  # noqa: E402
     from ct_viewer.ui.models import (  # noqa: E402
         CTVolume,
         MASK_COLORS,
@@ -31,6 +32,7 @@ if __package__ in {None, ""}:
         ORIENTATION_TITLES,
         SLICE_AXES,
         WINDOW_PRESETS,
+        StudyRenderSnapshot,
         ViewerStudy,
         clamp,
     )
@@ -42,6 +44,7 @@ else:
     from .ui import layout as ct_layout  # noqa: E402
     from .ui import rendering as ct_rendering  # noqa: E402
     from .ui.focus import focus_indices_from_masks  # noqa: E402
+    from .ui import widgets as ct_widgets  # noqa: E402
     from .ui.models import (  # noqa: E402
         CTVolume,
         MASK_COLORS,
@@ -50,6 +53,7 @@ else:
         ORIENTATION_TITLES,
         SLICE_AXES,
         WINDOW_PRESETS,
+        StudyRenderSnapshot,
         ViewerStudy,
         clamp,
     )
@@ -116,27 +120,17 @@ class CTMaskViewer(QMainWindow):
         if hasattr(self, "mask_viz"):
             self.mask_viz.clear_view()
         self._mask_preview_needs_refresh = False
-        self.mask_list.clear()
-        if hasattr(self, "study_list"):
-            self.study_list.clear()
-            placeholder = QListWidgetItem("No studies loaded")
-            flags = placeholder.flags()
-            flags &= ~Qt.ItemFlag.ItemIsSelectable
-            flags &= ~Qt.ItemFlag.ItemIsEnabled
-            placeholder.setFlags(flags)
-            self.study_list.addItem(placeholder)
         if hasattr(self, "study_section"):
             self.study_section.toggle_button.setText("Studies")
             if self.study_section.toggle_button.isChecked():
                 self.study_section.toggle_button.setChecked(False)
-        if hasattr(self, "masks_section") and self.masks_section.toggle_button.isChecked():
-            self.masks_section.toggle_button.setChecked(False)
         self.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.window_center_slider.setEnabled(False)
         self.window_width_slider.setEnabled(False)
         self.overlay_opacity_slider.setEnabled(False)
         self.crosshair_checkbox.setEnabled(False)
         self.window_preset_combo.setEnabled(False)
+        self.refresh_mask_list()
         self._set_loading_state("Load a CT file or DICOM folder to begin.", busy=False)
         self.refresh_recent_studies_menu()
 
@@ -171,7 +165,7 @@ class CTMaskViewer(QMainWindow):
         return "Mask-only study"
 
     def _study_item_text(self, study: ViewerStudy) -> str:
-        return f"{study.display_label}  ·  {study.mask_count} mask(s)"
+        return f"{study.display_label} | {study.mask_count} mask(s)"
 
     def _study_item_tooltip(self, study: ViewerStudy) -> str:
         lines = [f"Study: {study.display_label}", f"Masks: {study.mask_count}"]
@@ -184,9 +178,6 @@ class CTMaskViewer(QMainWindow):
             lines.append("Masks:")
             lines.extend(f"  - {layer.path}" for layer in study.mask_layers)
         return "\n".join(lines)
-
-    def _study_row_text(self, study: ViewerStudy) -> str:
-        return f"{study.display_label} | {study.mask_count} mask(s)"
 
     def _bind_study(self, study: ViewerStudy | None) -> None:
         if study is None:
@@ -233,31 +224,68 @@ class CTMaskViewer(QMainWindow):
         if not hasattr(self, "study_list"):
             return
 
-        self.study_list.blockSignals(True)
-        self.study_list.clear()
+        tree = self.study_list
+        tree.blockSignals(True)
+        tree.clear()
         if not self.studies:
-            placeholder = QListWidgetItem("No studies loaded")
+            placeholder = QTreeWidgetItem(tree)
+            placeholder.setText(0, "No studies loaded")
+            placeholder.setText(1, "")
             flags = placeholder.flags()
             flags &= ~Qt.ItemFlag.ItemIsSelectable
             flags &= ~Qt.ItemFlag.ItemIsEnabled
             placeholder.setFlags(flags)
-            self.study_list.addItem(placeholder)
         else:
             for index, study in enumerate(self.studies):
-                row_widget = ct_widgets.StudyRowWidget(self._study_row_text(study))
-                row_widget.clicked.connect(lambda _=False, current=index: self.study_list.setCurrentRow(current))
-                row_widget.removeRequested.connect(lambda _=False, current=index: self.remove_study(current))
-                row_widget.set_active(index == self.active_study_index)
+                root_item = QTreeWidgetItem(tree)
+                root_item.setData(0, Qt.ItemDataRole.UserRole, index)
+                root_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                root_item.setText(0, study.display_label)
+                root_item.setText(1, "")
+                root_item.setToolTip(0, self._study_item_tooltip(study))
+                root_bg = QColor(24, 38, 61, 235 if index == self.active_study_index else 170)
+                root_fg = QColor("#f7fbff" if index == self.active_study_index else "#dce7f3")
+                for column in (0, 1):
+                    root_item.setBackground(column, root_bg)
+                    root_item.setForeground(column, root_fg)
 
-                item = QListWidgetItem()
-                item.setToolTip(self._study_item_tooltip(study))
-                item.setData(Qt.ItemDataRole.UserRole, index)
-                item.setSizeHint(row_widget.sizeHint())
-                self.study_list.addItem(item)
-                self.study_list.setItemWidget(item, row_widget)
+                remove_button = QToolButton()
+                remove_button.setObjectName("studyRemoveButton")
+                remove_button.setText("×")
+                remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
+                remove_button.setAutoRaise(True)
+                remove_button.setFixedSize(22, 22)
+                remove_button.clicked.connect(lambda _=False, current=index: self.remove_study(current))
+                tree.setItemWidget(root_item, 1, remove_button)
+
+                for layer_index, layer in enumerate(study.mask_layers):
+                    child_item = QTreeWidgetItem(root_item)
+                    child_item.setText(0, layer.name)
+                    child_item.setText(1, "")
+                    child_item.setData(0, Qt.ItemDataRole.UserRole, layer_index)
+                    child_item.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                    )
+                    child_item.setCheckState(0, Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked)
+                    child_bg = QColor(12, 22, 36, 140)
+                    child_fg = QColor(*layer.color) if layer.visible else QColor(130, 150, 170)
+                    child_item.setBackground(0, child_bg)
+                    child_item.setBackground(1, child_bg)
+                    child_item.setForeground(0, child_fg)
+                    tooltip = layer.path
+                    if layer.voxel_count is not None:
+                        tooltip = f"{tooltip}\nVoxels: {layer.voxel_count:,}"
+                    child_item.setToolTip(0, tooltip)
+
+                root_item.setExpanded(bool(study.mask_layers))
+
             if self.active_study_index is not None and 0 <= self.active_study_index < len(self.studies):
-                self.study_list.setCurrentRow(self.active_study_index)
-        self.study_list.blockSignals(False)
+                current_item = tree.topLevelItem(self.active_study_index)
+                if current_item is not None:
+                    tree.setCurrentItem(current_item)
+
+        tree.blockSignals(False)
 
         if hasattr(self, "study_section"):
             self.study_section.toggle_button.setText(f"Studies ({len(self.studies)})" if self.studies else "Studies")
@@ -301,7 +329,6 @@ class CTMaskViewer(QMainWindow):
         if index < 0 or index >= len(self.studies):
             return
         if self.active_study_index == index:
-            self._refresh_study_switcher()
             return
 
         self._save_active_study_state()
@@ -311,8 +338,6 @@ class CTMaskViewer(QMainWindow):
         if self.ct_volume is not None:
             self._configure_window_controls()
         self._apply_study_window_state(study)
-        self.refresh_mask_list()
-        self.update_volume_info()
         self._refresh_study_switcher()
         self._invalidate_mask_preview()
 
@@ -322,11 +347,14 @@ class CTMaskViewer(QMainWindow):
             self.cursor_info_label.setText(f"Mask-only mode: {len(self.mask_layers)} mask(s) loaded")
             if self.mask_layers:
                 self._set_mask_visualizer_expanded(True)
-            self.refresh_mask_visualization()
         else:
             self._configure_slice_views()
-            self.render_all_views()
-            self.refresh_mask_visualization()
+            if not self._restore_cached_views(study):
+                self.render_all_views()
+
+        self.update_volume_info()
+        self._update_cursor_info()
+        self.refresh_mask_visualization()
 
     def remove_study(self, index: int) -> None:
         if index < 0 or index >= len(self.studies):
@@ -575,13 +603,14 @@ class CTMaskViewer(QMainWindow):
         active_study = self._active_study()
         if active_study is not None:
             active_study.label = self._study_label(active_study)
-        self.refresh_mask_list()
+            active_study.rendered_views.clear()
+            active_study.mask_preview_json = None
+            active_study.mask_preview_visible_count = 0
+            active_study.mask_preview_signature = None
         self.update_volume_info()
         self._refresh_study_switcher()
         self.render_all_views()
         self.refresh_mask_visualization()
-        if hasattr(self, "masks_section") and self.masks_section.toggle_button.isChecked():
-            self.masks_section.toggle_button.setChecked(False)
         self.statusBar().showMessage("Cleared all masks.", 4000)
 
     def _on_ct_loaded(self, volume: CTVolume) -> None:
@@ -631,18 +660,21 @@ class CTMaskViewer(QMainWindow):
             active_study = self._active_study()
             if active_study is not None:
                 active_study.label = self._study_label(active_study)
+                active_study.rendered_views.clear()
+                active_study.mask_preview_json = None
+                active_study.mask_preview_visible_count = 0
+                active_study.mask_preview_signature = None
             focused_indices = focus_indices_from_masks(self.ct_volume.shape, result.layers) if self.ct_volume is not None else None
             if focused_indices is not None:
                 self.current_indices[:] = focused_indices
-            self.refresh_mask_list()
             self.update_volume_info()
             self._refresh_study_switcher()
             self.render_all_views()
             self.refresh_mask_visualization()
             if self.ct_volume is None:
                 self._set_mask_visualizer_expanded(True)
-            if hasattr(self, "masks_section") and not self.masks_section.toggle_button.isChecked():
-                self.masks_section.toggle_button.setChecked(True)
+            if hasattr(self, "study_section") and not self.study_section.toggle_button.isChecked():
+                self.study_section.toggle_button.setChecked(True)
             self._remember_current_study()
             self._set_loading_state(f"Loaded {len(result.layers)} mask(s).", busy=False)
         else:
@@ -764,36 +796,58 @@ class CTMaskViewer(QMainWindow):
         )
 
     def refresh_mask_list(self) -> None:
-        self.mask_list.blockSignals(True)
-        self.mask_list.clear()
+        self._refresh_study_switcher()
 
-        for layer in self.mask_layers:
-            item = QListWidgetItem(layer.name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable)
-            item.setCheckState(Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked)
-            item.setForeground(QColor(*layer.color))
-            tooltip = layer.path
-            if layer.voxel_count is not None:
-                tooltip = f"{tooltip}\nVoxels: {layer.voxel_count:,}"
-            item.setToolTip(tooltip)
-            self.mask_list.addItem(item)
-
-        self.mask_list.blockSignals(False)
-
-    def on_mask_item_changed(self, item: QListWidgetItem) -> None:
-        row = self.mask_list.row(item)
-        if row < 0 or row >= len(self.mask_layers):
+    def on_mask_item_changed(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+        if item is None:
             return
 
-        self.mask_layers[row].visible = item.checkState() == Qt.CheckState.Checked
-        self.mask_slice_cache.clear()
-        self.render_all_views()
-        self.refresh_mask_visualization()
-
-    def on_study_selected(self, row: int) -> None:
-        if row < 0 or row >= len(self.studies):
+        parent = item.parent()
+        if parent is None:
             return
-        self._set_active_study_index(row)
+
+        study_index = parent.data(0, Qt.ItemDataRole.UserRole)
+        layer_index = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(study_index, int) or not isinstance(layer_index, int):
+            return
+        if study_index < 0 or study_index >= len(self.studies):
+            return
+
+        study = self.studies[study_index]
+        if layer_index < 0 or layer_index >= len(study.mask_layers):
+            return
+
+        study.mask_layers[layer_index].visible = item.checkState(0) == Qt.CheckState.Checked
+        study.rendered_views.clear()
+        study.mask_preview_json = None
+        study.mask_preview_visible_count = 0
+        study.mask_preview_signature = None
+
+        if study_index == self.active_study_index:
+            self.mask_slice_cache.clear()
+            self.render_all_views()
+            self.refresh_mask_visualization()
+
+    def on_study_selected(self, *_args) -> None:
+        if not hasattr(self, "study_list"):
+            return
+
+        item = self.study_list.currentItem()
+        if item is None:
+            return
+        if not (item.flags() & Qt.ItemFlag.ItemIsEnabled):
+            return
+
+        root_item = item if item.parent() is None else item.parent()
+        study_index = root_item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(study_index, int):
+            return
+        if item is not root_item:
+            self.study_list.blockSignals(True)
+            self.study_list.setCurrentItem(root_item)
+            self.study_list.blockSignals(False)
+        self.study_list.expandItem(root_item)
+        self._set_active_study_index(study_index)
 
     def apply_window_preset(self, preset_name: str) -> None:
         if self.ct_volume is None or self._window_control_lock:
@@ -878,6 +932,8 @@ class CTMaskViewer(QMainWindow):
         else:
             opacity = self.overlay_opacity_slider.value() / 100.0
 
+        active_study = self._active_study()
+
         for orientation, view in self.views.items():
             pixmap, logical_size = self._render_view(orientation, center, width, opacity)
             axis = SLICE_AXES[orientation]
@@ -886,6 +942,14 @@ class CTMaskViewer(QMainWindow):
             view.set_image(pixmap, logical_size)
             view.set_footer(f"Slice {slice_index + 1} / {self.ct_volume.shape[axis]}")
 
+            if active_study is not None:
+                active_study.rendered_views[orientation] = StudyRenderSnapshot(
+                    pixmap=QPixmap(pixmap),
+                    logical_size=logical_size,
+                    footer=f"Slice {slice_index + 1} / {self.ct_volume.shape[axis]}",
+                    slice_index=slice_index,
+                )
+
         self._update_cursor_info()
 
     def refresh_mask_visualization(self) -> None:
@@ -893,6 +957,19 @@ class CTMaskViewer(QMainWindow):
             return
 
         visible_layers = [layer for layer in self.mask_layers if layer.visible]
+        visible_signature = tuple(os.path.normcase(os.path.abspath(layer.path)) for layer in visible_layers)
+        active_study = self._active_study()
+        if (
+            active_study is not None
+            and active_study.mask_preview_json is not None
+            and active_study.mask_preview_signature == visible_signature
+            and active_study.mask_preview_visible_count == len(visible_layers)
+        ):
+            self.mask_viz.set_data_json(active_study.mask_preview_json, len(visible_layers))
+            self._mask_preview_needs_refresh = False
+            self.hide_loading_overlay()
+            return
+
         if not visible_layers:
             self.mask_viz.clear_view()
             self.hide_loading_overlay()
@@ -908,7 +985,7 @@ class CTMaskViewer(QMainWindow):
         self.mask_viz.set_busy(f"Rendering {len(visible_layers)} visible mask(s)...")
 
         thread = QThread(self)
-        worker = MaskPreviewWorker(generation, self.ct_volume, visible_layers)
+        worker = MaskPreviewWorker(generation, self.ct_volume, visible_layers, visible_signature, len(visible_layers))
         self._mask_preview_thread = thread
         self._mask_preview_worker = worker
         worker.moveToThread(thread)
@@ -923,9 +1000,15 @@ class CTMaskViewer(QMainWindow):
         thread.finished.connect(self._clear_mask_preview_thread)
         thread.start()
 
-    def _on_mask_preview_ready(self, generation: int, figure_json: object) -> None:
+    def _on_mask_preview_ready(self, generation: int, figure_json: object, signature: object, visible_count: int) -> None:
         if generation != self._mask_preview_generation or not hasattr(self, "mask_viz"):
             return
+
+        active_study = self._active_study()
+        if active_study is not None:
+            active_study.mask_preview_json = figure_json if isinstance(figure_json, dict) else None
+            active_study.mask_preview_signature = signature if isinstance(signature, tuple) else tuple()
+            active_study.mask_preview_visible_count = visible_count
 
         self.mask_viz.set_data_json(figure_json if isinstance(figure_json, dict) else None, len([layer for layer in self.mask_layers if layer.visible]))
         self._mask_preview_needs_refresh = False
@@ -938,6 +1021,24 @@ class CTMaskViewer(QMainWindow):
             QTimer.singleShot(0, self.refresh_mask_visualization)
             return
         QTimer.singleShot(120, self.hide_loading_overlay)
+
+    def _restore_cached_views(self, study: ViewerStudy) -> bool:
+        if study.ct_volume is None:
+            return False
+
+        if not all(orientation in study.rendered_views for orientation in self.views):
+            return False
+
+        for orientation, view in self.views.items():
+            snapshot = study.rendered_views.get(orientation)
+            if snapshot is None:
+                return False
+            view.set_slice_index(snapshot.slice_index)
+            view.set_image(snapshot.pixmap, snapshot.logical_size)
+            view.set_footer(snapshot.footer)
+
+        self._update_cursor_info()
+        return True
 
     def _render_view(self, orientation: str, center: int, width: int, opacity: float) -> tuple[QPixmap, tuple[int, int]]:
         ct_slice = self._get_ct_slice(orientation)

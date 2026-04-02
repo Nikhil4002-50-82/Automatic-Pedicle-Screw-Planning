@@ -127,38 +127,48 @@ QFrame#collapsibleContent {
     background: transparent;
     border: none;
 }
-QComboBox, QListWidget, QSlider, QCheckBox { color: #eaf2fb; }
-QComboBox, QListWidget {
+QComboBox, QTreeWidget, QSlider, QCheckBox { color: #eaf2fb; }
+QComboBox, QTreeWidget {
     background: rgba(13, 24, 40, 0.96);
     border: 1px solid #22354a;
     border-radius: 12px;
     padding: 6px;
 }
-QListWidget#studySwitcher {
-    padding: 6px;
+QTreeWidget#studySwitcher {
+    padding: 4px;
+    font-family: Consolas, "Cascadia Mono", "SFMono-Regular", monospace;
+    font-size: 12px;
+    alternate-background-color: rgba(16, 28, 45, 0.92);
 }
-QListWidget#studySwitcher::item {
-    padding: 8px 10px;
-    margin: 3px 2px;
-    border-radius: 8px;
+QTreeWidget#studySwitcher::item {
+    padding: 2px 4px;
+    margin: 0px;
+    border: none;
 }
-QListWidget#studySwitcher::item:selected {
-    background: rgba(28, 64, 103, 0.92);
+QTreeWidget#studySwitcher::item:selected {
+    background: rgba(28, 64, 103, 0.72);
+    color: #f7fbff;
+}
+QTreeWidget#studySwitcher::item:hover {
+    background: rgba(22, 42, 68, 0.72);
+}
+QTreeWidget#studySwitcher::branch {
+    background: transparent;
 }
 QToolButton#studyRemoveButton {
-    background: rgba(100, 34, 44, 0.0);
-    border: 1px solid rgba(255, 119, 136, 0.14);
-    border-radius: 12px;
-    color: #dce7f3;
-    font-size: 15px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: #8fa3b8;
+    font-size: 13px;
     font-weight: 700;
 }
 QToolButton#studyRemoveButton:hover {
-    background: rgba(183, 50, 69, 0.28);
-    border-color: rgba(255, 119, 136, 0.44);
+    background: rgba(183, 50, 69, 0.14);
+    color: #f4f9ff;
 }
 QToolButton#studyRemoveButton:pressed {
-    background: rgba(183, 50, 69, 0.42);
+    background: rgba(183, 50, 69, 0.26);
 }
 QComboBox::drop-down { border: none; }
 QSlider::groove:horizontal {

@@ -3,7 +3,6 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -12,7 +11,8 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QListWidget,
+    QHeaderView,
+    QTreeWidget,
     QMainWindow,
     QMenu,
     QPushButton,
@@ -170,12 +170,20 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.volume_info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     viewer.volume_info_label.setMinimumHeight(74)
 
-    viewer.study_list = QListWidget()
-    viewer.study_list.setObjectName("studySwitcher")
-    viewer.study_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    viewer.study_list.setMinimumHeight(92)
-    viewer.study_list.setMaximumHeight(152)
-    viewer.study_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    viewer.study_tree = QTreeWidget()
+    viewer.study_tree.setObjectName("studySwitcher")
+    viewer.study_tree.setColumnCount(2)
+    viewer.study_tree.setHeaderHidden(True)
+    viewer.study_tree.header().setStretchLastSection(False)
+    viewer.study_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    viewer.study_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+    viewer.study_tree.setRootIsDecorated(True)
+    viewer.study_tree.setIndentation(18)
+    viewer.study_tree.setMinimumHeight(150)
+    viewer.study_tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    viewer.study_tree.setUniformRowHeights(True)
+    viewer.study_tree.setColumnWidth(1, 28)
+    viewer.study_list = viewer.study_tree
 
     viewer.window_preset_combo = QComboBox()
     viewer.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
@@ -201,11 +209,7 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.crosshair_checkbox = QCheckBox("Show crosshair")
     viewer.crosshair_checkbox.setChecked(True)
 
-    viewer.mask_list = QListWidget()
-    viewer.mask_list.setMinimumHeight(210)
-    viewer.mask_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-    hint = QLabel("Click inside any slice to jump the crosshair. Mouse wheel scrolls that plane.")
+    hint = QLabel("Select a study to switch. Expand it to inspect child masks.")
     hint.setWordWrap(True)
     hint.setObjectName("helperText")
 
@@ -220,6 +224,10 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     import_grid.addWidget(viewer.reset_view_button, 2, 0, 1, 2)
     import_section.content_layout.addLayout(import_grid)
 
+    viewer.study_section = ct_widgets.CollapsibleSection("Studies", expanded=True)
+    viewer.study_section.content_layout.addWidget(viewer.study_tree)
+    viewer.study_section.content_layout.addWidget(hint)
+
     window_section = ct_widgets.CollapsibleSection("Windowing", expanded=False)
     windowing_layout = QVBoxLayout()
     windowing_layout.setSpacing(10)
@@ -227,19 +235,12 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     windowing_layout.addWidget(viewer.crosshair_checkbox)
     window_section.content_layout.addLayout(windowing_layout)
 
-    viewer.masks_section = ct_widgets.CollapsibleSection("Masks", expanded=False)
-    viewer.masks_section.content_layout.addWidget(viewer.mask_list)
-    viewer.masks_section.content_layout.addWidget(hint)
-
     content_layout.addWidget(title)
     content_layout.addWidget(subtitle)
-    content_layout.addWidget(viewer.volume_info_label)
-    viewer.study_section = ct_widgets.CollapsibleSection("Studies", expanded=False)
-    viewer.study_section.content_layout.addWidget(viewer.study_list)
-    content_layout.addWidget(viewer.study_section)
     content_layout.addWidget(import_section)
+    content_layout.addWidget(viewer.study_section)
     content_layout.addWidget(window_section)
-    content_layout.addWidget(viewer.masks_section)
+    content_layout.addWidget(viewer.volume_info_label)
     content_layout.addStretch(1)
 
     scroll.setWidget(content)
@@ -254,8 +255,8 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.window_width_slider.valueChanged.connect(viewer.on_window_slider_changed)
     viewer.overlay_opacity_slider.valueChanged.connect(viewer.on_overlay_opacity_changed)
     viewer.crosshair_checkbox.toggled.connect(lambda _: viewer.render_all_views())
-    viewer.mask_list.itemChanged.connect(viewer.on_mask_item_changed)
-    viewer.study_list.currentRowChanged.connect(viewer.on_study_selected)
+    viewer.study_tree.itemSelectionChanged.connect(viewer.on_study_selected)
+    viewer.study_tree.itemChanged.connect(viewer.on_mask_item_changed)
 
     mask_menu = QMenu(viewer)
     mask_menu.setObjectName("maskPopupMenu")
