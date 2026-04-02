@@ -353,7 +353,7 @@ class MaskVisualizationPane(QFrame):
         self.hint_label.setStyleSheet("font-size: 12px; color: #90a5bb;")
         self.hint_label.setWordWrap(True)
 
-        self.placeholder_label = _DoubleClickLabel("Load a CT and masks to preview them in 3D.")
+        self.placeholder_label = _DoubleClickLabel("Load a CT, or just masks, to preview them in 3D.")
         self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.placeholder_label.setWordWrap(True)
         self.placeholder_label.setStyleSheet(
@@ -394,7 +394,7 @@ class MaskVisualizationPane(QFrame):
         self.notify_resize()
 
     def clear_view(self) -> None:
-        self.placeholder_label.setText("Load a CT and masks to preview them in 3D.")
+        self.placeholder_label.setText("Load a CT, or just masks, to preview them in 3D.")
         self._pending_payload = None
         self.stack.setCurrentWidget(self.placeholder_label)
 

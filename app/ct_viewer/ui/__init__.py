@@ -21,6 +21,7 @@ from .rendering import (
     qimage_from_rgba,
 )
 from .mask_viz import MaskVisualizationPane, build_mask_preview_figure
+from .recents import RecentStudiesStore, RecentStudy
 from .widgets import CollapsibleSection, SliceCanvas, SliceView
 
 __all__ = [
@@ -48,6 +49,8 @@ __all__ = [
     "qimage_from_rgba",
     "MaskVisualizationPane",
     "build_mask_preview_figure",
+    "RecentStudiesStore",
+    "RecentStudy",
     "SliceCanvas",
     "SliceView",
     "CollapsibleSection",

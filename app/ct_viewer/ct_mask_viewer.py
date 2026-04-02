@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -34,6 +33,7 @@ if __package__ in {None, ""}:
         WINDOW_PRESETS,
         clamp,
     )
+    from ct_viewer.ui.recents import RecentStudy, RecentStudiesStore  # noqa: E402
     from ct_viewer.ui.runtime import install_qt_message_filter  # noqa: E402
     from ct_viewer.ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker  # noqa: E402
     from ct_viewer.ui.theme import apply_styles as apply_viewer_styles  # noqa: E402
@@ -51,6 +51,7 @@ else:
         WINDOW_PRESETS,
         clamp,
     )
+    from .ui.recents import RecentStudy, RecentStudiesStore  # noqa: E402
     from .ui.runtime import install_qt_message_filter  # noqa: E402
     from .ui.workers import CTLoadWorker, MaskLoadWorker, MaskPreviewWorker  # noqa: E402
     from .ui.theme import apply_styles as apply_viewer_styles  # noqa: E402
@@ -77,6 +78,8 @@ class CTMaskViewer(QMainWindow):
         self._mask_preview_generation = 0
         self._mask_preview_needs_refresh = False
         self._window_control_lock = False
+        self._pending_recent_mask_paths: list[str] | None = None
+        self.recents_store = RecentStudiesStore()
 
         self.setWindowTitle("CT and Segmentation Viewer")
         self.resize(1680, 980)
@@ -85,6 +88,7 @@ class CTMaskViewer(QMainWindow):
         ct_layout.build_actions(self)
         apply_viewer_styles(self)
         self.clear_viewer()
+        self.refresh_recent_studies_menu()
 
     def clear_viewer(self) -> None:
         if getattr(self, "_mask_visualizer_expanded", False):
@@ -96,18 +100,23 @@ class CTMaskViewer(QMainWindow):
         self.mask_slice_cache.clear()
         self.volume_info_label.setText("No CT loaded")
         self.cursor_info_label.setText("Voxel: -, -, -    HU: -")
+        self._pending_recent_mask_paths = None
         for view in self.views.values():
             view.clear_view()
         if hasattr(self, "mask_viz"):
             self.mask_viz.clear_view()
         self._mask_preview_needs_refresh = False
         self.mask_list.clear()
+        if hasattr(self, "masks_section") and self.masks_section.toggle_button.isChecked():
+            self.masks_section.toggle_button.setChecked(False)
+        self.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.window_center_slider.setEnabled(False)
         self.window_width_slider.setEnabled(False)
         self.overlay_opacity_slider.setEnabled(False)
         self.crosshair_checkbox.setEnabled(False)
         self.window_preset_combo.setEnabled(False)
         self._set_loading_state("Load a CT file or DICOM folder to begin.", busy=False)
+        self.refresh_recent_studies_menu()
 
     def toggle_mask_visualizer_expanded(self) -> None:
         self._set_mask_visualizer_expanded(not getattr(self, "_mask_visualizer_expanded", False))
@@ -153,9 +162,6 @@ class CTMaskViewer(QMainWindow):
             self.load_ct_async(folder)
 
     def select_mask_files(self) -> None:
-        if not self._require_ct_loaded():
-            return
-
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Select Segmentation Masks",
@@ -166,9 +172,6 @@ class CTMaskViewer(QMainWindow):
             self.load_masks_async(paths)
 
     def select_mask_folder(self) -> None:
-        if not self._require_ct_loaded():
-            return
-
         folder = QFileDialog.getExistingDirectory(self, "Select Mask Folder")
         if not folder:
             return
@@ -181,6 +184,70 @@ class CTMaskViewer(QMainWindow):
             return
 
         self.load_masks_async(mask_paths)
+
+    def open_recent_study(self, study: RecentStudy) -> None:
+        if self._ct_thread is not None or self._mask_thread is not None:
+            self.statusBar().showMessage("Please wait for the current load to finish.", 4000)
+            return
+
+        ct_path = Path(study.ct_path)
+        if not ct_path.exists():
+            QMessageBox.warning(
+                self,
+                "Recent Study Missing",
+                f"The saved CT could not be found:\n{study.ct_path}",
+            )
+            self.recents_store.remove(study.ct_path)
+            self.refresh_recent_studies_menu()
+            return
+
+        self._pending_recent_mask_paths = [path for path in study.mask_paths if Path(path).exists()]
+        self.show_loading_overlay("Restoring recent study...")
+        self._set_loading_state(f"Restoring recent study: {ct_path.name}", busy=True)
+        self.load_ct_async(study.ct_path)
+
+    def clear_recent_studies(self) -> None:
+        self.recents_store.clear()
+        self.refresh_recent_studies_menu()
+        self.statusBar().showMessage("Cleared recent studies.", 4000)
+
+    def refresh_recent_studies_menu(self) -> None:
+        if not hasattr(self, "recent_studies_menu"):
+            return
+
+        studies = self.recents_store.entries
+        self.recent_studies_menu.clear()
+
+        if not studies:
+            empty_action = self.recent_studies_menu.addAction("No recent studies")
+            empty_action.setEnabled(False)
+            return
+
+        for study in studies:
+            action_text = f"{study.display_label} - {study.mask_count} mask(s)"
+            action = self.recent_studies_menu.addAction(action_text)
+            action.setToolTip(
+                "\n".join(
+                    [
+                        f"CT: {study.ct_path}",
+                        f"Masks: {study.mask_count}",
+                        *[f"  - {path}" for path in study.mask_paths],
+                    ]
+                )
+            )
+            action.triggered.connect(lambda _=False, current=study: self.open_recent_study(current))
+
+        self.recent_studies_menu.addSeparator()
+        clear_action = self.recent_studies_menu.addAction("Clear Recents")
+        clear_action.triggered.connect(self.clear_recent_studies)
+
+    def _remember_current_study(self) -> None:
+        if self.ct_volume is None:
+            return
+
+        mask_paths = [layer.path for layer in self.mask_layers]
+        self.recents_store.upsert(self.ct_volume.path, mask_paths)
+        self.refresh_recent_studies_menu()
 
     def load_ct_async(self, path: str) -> None:
         if self._ct_thread is not None:
@@ -204,7 +271,7 @@ class CTMaskViewer(QMainWindow):
         thread.start()
 
     def load_masks_async(self, paths: list[str]) -> None:
-        if self.ct_volume is None or self._mask_thread is not None:
+        if self._mask_thread is not None:
             return
 
         seen_paths = {os.path.normcase(os.path.abspath(layer.path)) for layer in self.mask_layers}
@@ -216,7 +283,8 @@ class CTMaskViewer(QMainWindow):
         self.show_loading_overlay("Loading masks and preparing overlays...")
         self._set_loading_state("Loading masks...", busy=True)
         thread = QThread(self)
-        worker = MaskLoadWorker(unique_paths, self.ct_volume.image, len(self.mask_layers))
+        ct_image = self.ct_volume.image if self.ct_volume is not None else None
+        worker = MaskLoadWorker(unique_paths, ct_image, len(self.mask_layers))
         self._mask_worker = worker
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -241,6 +309,8 @@ class CTMaskViewer(QMainWindow):
         self.update_volume_info()
         self.render_all_views()
         self.refresh_mask_visualization()
+        if hasattr(self, "masks_section") and self.masks_section.toggle_button.isChecked():
+            self.masks_section.toggle_button.setChecked(False)
         self.statusBar().showMessage("Cleared all masks.", 4000)
 
     def _on_ct_loaded(self, volume: CTVolume) -> None:
@@ -260,7 +330,16 @@ class CTMaskViewer(QMainWindow):
         self.update_volume_info()
         self.render_all_views()
         self.refresh_mask_visualization()
+
+        pending_masks = self._pending_recent_mask_paths
+        self._pending_recent_mask_paths = None
+        if pending_masks:
+            self.load_masks_async(pending_masks)
+            return
+
+        self._remember_current_study()
         self._set_loading_state(f"Loaded CT: {Path(volume.path).name}", busy=False)
+        self.hide_loading_overlay()
 
         if volume.summary.is_constant:
             QMessageBox.warning(
@@ -284,6 +363,11 @@ class CTMaskViewer(QMainWindow):
             self.update_volume_info()
             self.render_all_views()
             self.refresh_mask_visualization()
+            if self.ct_volume is None:
+                self._set_mask_visualizer_expanded(True)
+            if hasattr(self, "masks_section") and not self.masks_section.toggle_button.isChecked():
+                self.masks_section.toggle_button.setChecked(True)
+            self._remember_current_study()
             self._set_loading_state(f"Loaded {len(result.layers)} mask(s).", busy=False)
         else:
             self._set_loading_state("No masks were loaded.", busy=False)
@@ -293,6 +377,7 @@ class CTMaskViewer(QMainWindow):
             QMessageBox.information(self, "Mask Load Notes", "\n".join(result.warnings))
 
     def _on_worker_failed(self, title: str, message: str) -> None:
+        self._pending_recent_mask_paths = None
         self._set_loading_state("Load failed.", busy=False)
         self.hide_loading_overlay()
         self._show_error(title, message)
@@ -310,8 +395,7 @@ class CTMaskViewer(QMainWindow):
     def _set_loading_state(self, message: str, busy: bool) -> None:
         self.load_ct_button.setEnabled(not busy and self._ct_thread is None)
         self.load_dicom_button.setEnabled(not busy and self._ct_thread is None)
-        self.add_masks_button.setEnabled(not busy and self.ct_volume is not None and self._mask_thread is None)
-        self.add_mask_folder_button.setEnabled(not busy and self.ct_volume is not None and self._mask_thread is None)
+        self.add_masks_button.setEnabled(not busy and self._mask_thread is None)
         self.reset_view_button.setEnabled(not busy and self.ct_volume is not None)
         self.clear_masks_button.setEnabled(not busy and bool(self.mask_layers))
         self.statusBar().showMessage(message)
@@ -363,20 +447,34 @@ class CTMaskViewer(QMainWindow):
 
     def update_volume_info(self) -> None:
         if self.ct_volume is None:
-            self.volume_info_label.setText("No CT loaded")
+            if self.mask_layers:
+                self.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                loaded_masks = len(self.mask_layers)
+                self.volume_info_label.setText(
+                    "\n".join(
+                        [
+                            "Mask-only mode",
+                            f"Masks: {loaded_masks}",
+                            "Load a CT later to overlay slices.",
+                        ]
+                    )
+                )
+            else:
+                self.volume_info_label.setText("No CT loaded")
+                self.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             return
 
         shape_text = " x ".join(str(value) for value in self.ct_volume.shape)
         spacing_text = " x ".join(f"{value:.2f} mm" for value in self.ct_zooms)
         mask_count = len(self.mask_layers)
         filename = Path(self.ct_volume.path).name
-        metrics = QFontMetrics(self.volume_info_label.font())
-        elided_name = metrics.elidedText(filename, Qt.TextElideMode.ElideMiddle, 240)
+        wrapped_name = self._wrap_filename_for_label(filename)
+        self.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         self.volume_info_label.setText(
             "\n".join(
                 [
-                    f"CT: {elided_name}",
+                    f"CT: {wrapped_name}",
                     f"Shape: {shape_text}",
                     f"Spacing: {spacing_text}",
                     f"{self.ct_intensity_summary} | Masks: {mask_count} | Orientation: canonical RAS+",
@@ -506,11 +604,6 @@ class CTMaskViewer(QMainWindow):
         if not hasattr(self, "mask_viz"):
             return
 
-        if self.ct_volume is None:
-            self.mask_viz.clear_view()
-            self.hide_loading_overlay()
-            return
-
         visible_layers = [layer for layer in self.mask_layers if layer.visible]
         if not visible_layers:
             self.mask_viz.clear_view()
@@ -630,7 +723,10 @@ class CTMaskViewer(QMainWindow):
 
     def _update_cursor_info(self) -> None:
         if self.ct_volume is None:
-            self.cursor_info_label.setText("Voxel: -, -, -    HU: -")
+            if self.mask_layers:
+                self.cursor_info_label.setText(f"Mask-only mode: {len(self.mask_layers)} mask(s) loaded")
+            else:
+                self.cursor_info_label.setText("Voxel: -, -, -    HU: -")
             return
 
         x_idx, y_idx, z_idx = self.current_indices
@@ -647,11 +743,12 @@ class CTMaskViewer(QMainWindow):
             f"Voxel: x={x_idx}  y={y_idx}  z={z_idx}    HU: {hu_value:.1f}    Masks here: {mask_text}"
         )
 
-    def _require_ct_loaded(self) -> bool:
-        if self.ct_volume is not None:
-            return True
-        QMessageBox.information(self, "Load CT First", "Load a CT volume before adding segmentation masks.")
-        return False
+    def _wrap_filename_for_label(self, name: str) -> str:
+        return (
+            name.replace("_", "_\u200b")
+            .replace("-", "-\u200b")
+            .replace(".", ".\u200b")
+        )
 
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.critical(self, title, message)

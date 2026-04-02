@@ -126,17 +126,24 @@ def load_ct_volume(path: str) -> CTVolume:
     )
 
 
-def load_mask_layers(paths: list[str], ct_image: nib.spatialimages.SpatialImage, start_index: int) -> MaskLoadResult:
+def load_mask_layers(
+    paths: list[str],
+    ct_image: nib.spatialimages.SpatialImage | None,
+    start_index: int,
+) -> MaskLoadResult:
     layers: list[MaskLayer] = []
     warnings: list[str] = []
 
     for index, path in enumerate(paths, start=start_index):
         try:
             mask_image = load_nifti_image(path)
-            if mask_image.shape != ct_image.shape or not np.allclose(
-                mask_image.affine,
-                ct_image.affine,
-                atol=1e-3,
+            if ct_image is not None and (
+                mask_image.shape != ct_image.shape
+                or not np.allclose(
+                    mask_image.affine,
+                    ct_image.affine,
+                    atol=1e-3,
+                )
             ):
                 mask_image = resample_from_to(mask_image, ct_image, order=0)
                 warnings.append(f"{Path(path).name}: resampled to match CT geometry.")

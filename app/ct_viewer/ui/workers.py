@@ -49,7 +49,7 @@ class MaskPreviewWorker(QObject):
     finished = pyqtSignal(int, object)
     failed = pyqtSignal(str, str)
 
-    def __init__(self, generation: int, ct_volume: CTVolume, layers: list[MaskLayer]) -> None:
+    def __init__(self, generation: int, ct_volume: CTVolume | None, layers: list[MaskLayer]) -> None:
         super().__init__()
         self.generation = generation
         self.ct_volume = ct_volume

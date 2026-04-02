@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -142,29 +143,31 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     subtitle.setWordWrap(True)
     subtitle.setObjectName("panelSubtitle")
 
-    viewer.load_ct_button = QPushButton("Load CT File")
-    viewer.load_dicom_button = QPushButton("Load DICOM Folder")
-    viewer.add_masks_button = QPushButton("Add Mask Files")
-    viewer.add_mask_folder_button = QPushButton("Add Mask Folder")
-    viewer.reset_view_button = QPushButton("Reset Window + Slices")
+    viewer.load_ct_button = QPushButton("Load NIfTI")
+    viewer.load_dicom_button = QPushButton("Load DICOM")
+    viewer.add_masks_button = QPushButton("Add Mask(s)")
+    viewer.add_masks_button.setObjectName("maskPopupButton")
+    viewer.reset_view_button = QPushButton("Reset View")
     viewer.clear_masks_button = QPushButton("Clear Masks")
 
     for button in (
         viewer.load_ct_button,
         viewer.load_dicom_button,
-        viewer.add_masks_button,
-        viewer.add_mask_folder_button,
         viewer.reset_view_button,
         viewer.clear_masks_button,
     ):
         button.setMinimumHeight(42)
         button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
+    viewer.add_masks_button.setMinimumHeight(42)
+    viewer.add_masks_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
     viewer.volume_info_label = QLabel("No CT loaded")
     viewer.volume_info_label.setWordWrap(True)
     viewer.volume_info_label.setObjectName("infoBlock")
-    viewer.volume_info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-    viewer.volume_info_label.setFixedHeight(118)
+    viewer.volume_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    viewer.volume_info_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    viewer.volume_info_label.setMinimumHeight(74)
 
     viewer.window_preset_combo = QComboBox()
     viewer.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
@@ -199,12 +202,15 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     hint.setObjectName("helperText")
 
     import_section = ct_widgets.CollapsibleSection("Import & Actions", expanded=False)
-    import_section.content_layout.addWidget(viewer.load_ct_button)
-    import_section.content_layout.addWidget(viewer.load_dicom_button)
-    import_section.content_layout.addWidget(viewer.add_masks_button)
-    import_section.content_layout.addWidget(viewer.add_mask_folder_button)
-    import_section.content_layout.addWidget(viewer.reset_view_button)
-    import_section.content_layout.addWidget(viewer.clear_masks_button)
+    import_grid = QGridLayout()
+    import_grid.setSpacing(10)
+    import_grid.setContentsMargins(0, 0, 0, 0)
+    import_grid.addWidget(viewer.load_ct_button, 0, 0)
+    import_grid.addWidget(viewer.load_dicom_button, 0, 1)
+    import_grid.addWidget(viewer.add_masks_button, 1, 0)
+    import_grid.addWidget(viewer.clear_masks_button, 1, 1)
+    import_grid.addWidget(viewer.reset_view_button, 2, 0, 1, 2)
+    import_section.content_layout.addLayout(import_grid)
 
     window_section = ct_widgets.CollapsibleSection("Windowing", expanded=False)
     windowing_layout = QVBoxLayout()
@@ -213,16 +219,16 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     windowing_layout.addWidget(viewer.crosshair_checkbox)
     window_section.content_layout.addLayout(windowing_layout)
 
-    masks_section = ct_widgets.CollapsibleSection("Masks", expanded=True)
-    masks_section.content_layout.addWidget(viewer.mask_list)
-    masks_section.content_layout.addWidget(hint)
+    viewer.masks_section = ct_widgets.CollapsibleSection("Masks", expanded=False)
+    viewer.masks_section.content_layout.addWidget(viewer.mask_list)
+    viewer.masks_section.content_layout.addWidget(hint)
 
     content_layout.addWidget(title)
     content_layout.addWidget(subtitle)
     content_layout.addWidget(viewer.volume_info_label)
     content_layout.addWidget(import_section)
     content_layout.addWidget(window_section)
-    content_layout.addWidget(masks_section, 1)
+    content_layout.addWidget(viewer.masks_section)
     content_layout.addStretch(1)
 
     scroll.setWidget(content)
@@ -230,8 +236,6 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
 
     viewer.load_ct_button.clicked.connect(viewer.select_ct_file)
     viewer.load_dicom_button.clicked.connect(viewer.select_dicom_folder)
-    viewer.add_masks_button.clicked.connect(viewer.select_mask_files)
-    viewer.add_mask_folder_button.clicked.connect(viewer.select_mask_folder)
     viewer.reset_view_button.clicked.connect(viewer.reset_view_state)
     viewer.clear_masks_button.clicked.connect(viewer.clear_masks)
     viewer.window_preset_combo.currentTextChanged.connect(viewer.apply_window_preset)
@@ -240,6 +244,13 @@ def build_control_panel(viewer: QMainWindow) -> QWidget:
     viewer.overlay_opacity_slider.valueChanged.connect(viewer.on_overlay_opacity_changed)
     viewer.crosshair_checkbox.toggled.connect(lambda _: viewer.render_all_views())
     viewer.mask_list.itemChanged.connect(viewer.on_mask_item_changed)
+
+    mask_menu = QMenu(viewer)
+    mask_menu.setObjectName("maskPopupMenu")
+    mask_menu.addAction("Add Mask File(s)", viewer.select_mask_files)
+    mask_menu.addAction("Add Mask Folder", viewer.select_mask_folder)
+    viewer.add_masks_menu = mask_menu
+    viewer.add_masks_button.clicked.connect(lambda: mask_menu.popup(viewer.add_masks_button.mapToGlobal(viewer.add_masks_button.rect().bottomLeft())))
 
     return panel
 
@@ -388,6 +399,8 @@ def build_actions(viewer: QMainWindow) -> None:
     file_menu.addAction(add_folder_action)
     file_menu.addSeparator()
     file_menu.addAction(clear_masks_action)
+    viewer.recent_studies_menu = file_menu.addMenu("Recent Studies")
+    viewer.recent_studies_menu.setObjectName("recentStudiesMenu")
 
     view_menu = viewer.menuBar().addMenu("View")
     view_menu.addAction(reset_action)

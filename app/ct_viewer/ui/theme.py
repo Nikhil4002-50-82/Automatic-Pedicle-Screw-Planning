@@ -81,6 +81,37 @@ QPushButton:disabled {
     color: #8aa2ba;
     border: 1px solid #22405f;
 }
+QPushButton#maskPopupButton {
+    color: #f7fbff;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1c446e, stop:1 #17314f);
+    border: 1px solid #2c5c8e;
+    border-radius: 12px;
+    padding: 9px 12px;
+    min-height: 42px;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#maskPopupButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #245181, stop:1 #1c4067);
+}
+QPushButton#maskPopupButton:pressed {
+    background: #122a43;
+}
+QMenu#maskPopupMenu {
+    background: rgba(11, 19, 30, 0.98);
+    color: #eef5fb;
+    border: 1px solid #31526f;
+    border-radius: 12px;
+    padding: 6px;
+}
+QMenu#maskPopupMenu::item {
+    padding: 8px 14px;
+    border-radius: 8px;
+    margin: 2px 4px;
+}
+QMenu#maskPopupMenu::item:selected {
+    background: #1c4067;
+}
 QToolButton#sectionToggle {
     color: #f6fbff;
     background: rgba(19, 34, 55, 0.82);
