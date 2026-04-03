@@ -23,10 +23,12 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QPixmap, QColor
 
 # Importing your existing modules (Unchanged)
-from run_totalseg import run_totalseg
-from mesh_builder import build_vertebra_mesh
-from geometry import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from geometryV4 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
 from visualizerV5 import visualize_surgical_plan
+
+import nibabel as nib
+import numpy as np
+from skimage.measure import marching_cubes
 
 # ---------- REAL TIME TERMINAL STREAM ----------
 class LogStream(QObject):
@@ -46,18 +48,37 @@ class Worker(QThread):
     screw_found = pyqtSignal(dict)
     finished = pyqtSignal(object, object, list)
 
-    def __init__(self, ct_path):
+    def __init__(self, seg_path):
         super().__init__()
-        self.ct_path = ct_path
+        self.seg_path = seg_path
+
+    def build_mesh_from_combined(self, seg_path):
+        nii = nib.load(seg_path)
+        data = nii.get_fdata()
+        affine = nii.affine
+
+        # Combine all labels into one binary mask
+        mask = (data > 0).astype(np.uint8)
+
+        if np.sum(mask) == 0:
+            raise ValueError("Segmented file is empty. No mesh can be created.")
+
+        verts, faces, _, _ = marching_cubes(mask, level=0.5)
+
+        vertsWorld = nib.affines.apply_affine(affine, verts)
+
+        print(f"Mesh Ready: {len(vertsWorld)} vertices")
+
+        return vertsWorld, faces
 
     def run(self):
-        print("INITIATING: Segmentation Pipeline...")
-        segData = run_totalseg(self.ct_path)
-        segFolder = segData["seg_folder"]
-        combined_path = segData["combined_seg_path"]
 
-        print("PROCESSING: Generating 3D Mesh Surfaces...")
-        vertsWorld, faces = build_vertebra_mesh(segFolder)
+        print("MODE: Segmented Input Only")
+
+        combined_path = self.seg_path
+
+        print("PROCESSING: Generating Mesh from Segmented Volume...")
+        vertsWorld, faces = self.build_mesh_from_combined(combined_path)
 
         print("PLANNING: Calculating Optimal Trajectories...")
         resultsList = []
@@ -91,7 +112,7 @@ class Worker(QThread):
 class GUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.ct = None
+        self.seg = None
         self.verts = None
         self.faces = None
         self.results = []
@@ -102,9 +123,10 @@ class GUI(QWidget):
         self.stream.newText.connect(self.updateLog)
         sys.stdout = self.stream
         sys.stderr = self.stream
+        
 
     def initUI(self):
-        self.setWindowTitle("Automatic Pedicle Screw Planning System - V5.0")
+        self.setWindowTitle("Automatic Pedicle Screw Planning System - V7.0")
         self.setGeometry(100, 100, 1200, 800)
 
         main_layout = QVBoxLayout()
@@ -112,23 +134,24 @@ class GUI(QWidget):
         main_layout.setSpacing(15)
 
         title = QLabel("AUTOMATIC PEDICLE SCREW PLANNING SYSTEM")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
         # Qt.AlignCenter -> Qt.AlignmentFlag.AlignCenter
         title.setAlignment(Qt.AlignmentFlag.AlignCenter) 
         main_layout.addWidget(title)
 
         ctrl_layout = QHBoxLayout()
-        self.fileLabel = QLabel("DATASET: NOT SELECTED")
+        self.fileLabel = QLabel("SEGMENTED FILE: NOT SELECTED")
         self.fileLabel.setStyleSheet("color: #7f8c8d; font-family: 'Segoe UI';")
+
+        select_seg_btn = QPushButton("LOAD SEGMENTED FILE")
+        select_seg_btn.clicked.connect(self.selectSegmented)
         
-        select_btn = QPushButton("SELECT CT SCAN")
-        select_btn.clicked.connect(self.selectCT)
+        ctrl_layout.addWidget(select_seg_btn)
         
         self.runBtn = QPushButton("EXECUTE PLANNING PIPELINE")
         self.runBtn.clicked.connect(self.runPipeline)
         self.runBtn.setStyleSheet("background-color: #27ae60;")
 
-        ctrl_layout.addWidget(select_btn)
         ctrl_layout.addWidget(self.fileLabel)
         ctrl_layout.addStretch()
         ctrl_layout.addWidget(self.runBtn)
@@ -208,17 +231,22 @@ class GUI(QWidget):
     def updateLog(self, text):
         self.logBox.append(text)
         self.logBox.ensureCursorVisible()
-
-    def selectCT(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select CT NIfTI", "", "NIfTI Files (*.nii *.nii.gz)")
+    
+    def selectSegmented(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Segmented NIfTI",
+            "",
+            "NIfTI Files (*.nii *.nii.gz)"
+        )
         if path:
-            self.ct = path
-            self.fileLabel.setText(f"DATASET: {os.path.basename(path)}")
-            print(f"SYSTEM: Loaded source {os.path.basename(path)}")
+            self.seg = path
+            self.fileLabel.setText(f"SEGMENTED: {os.path.basename(path)}")
+            print(f"SYSTEM: Loaded segmented file {os.path.basename(path)}")
 
     def runPipeline(self):
-        if not self.ct:
-            print("ERROR: No CT scan selected for processing.")
+        if not self.seg:
+            print("ERROR: No segmented file selected.")
             return
 
         self.table.setRowCount(0)
@@ -226,7 +254,8 @@ class GUI(QWidget):
         self.runBtn.setEnabled(False)
         self.visualBtn.setEnabled(False)
 
-        self.worker = Worker(self.ct)
+        # self.worker = Worker(self.seg)
+        self.worker = Worker(self.seg)
         self.worker.screw_found.connect(self.addTableRow)
         self.worker.finished.connect(self.finishPipeline)
         self.worker.start()
@@ -257,6 +286,11 @@ class GUI(QWidget):
         print("COMPLETED: All anatomical planning tasks finished successfully.")
 
     def visualize(self):
+
+        if self.verts is None or len(self.verts) == 0:
+            print("ERROR: No mesh available for visualization")
+            return
+
         if self.results:
             print("SYSTEM: Initializing 3D Surgical Visualization Engine...")
 
@@ -266,7 +300,7 @@ class GUI(QWidget):
                     self.faces,
                     self.results
                 )
-                show()   # 🔥 IMPORTANT
+                show()
             except Exception as e:
                 print(f"VISUALIZER ERROR: {e}")
 
