@@ -112,7 +112,7 @@ class GUI(QWidget):
         main_layout.setSpacing(15)
 
         title = QLabel("AUTOMATIC PEDICLE SCREW PLANNING SYSTEM")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: #2c3e50; letter-spacing: 2px;")
         # Qt.AlignCenter -> Qt.AlignmentFlag.AlignCenter
         title.setAlignment(Qt.AlignmentFlag.AlignCenter) 
         main_layout.addWidget(title)
