@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import html as _html
 
 
 class _LazyModule:
@@ -26,6 +27,8 @@ np = _LazyModule("numpy")
 # Plotly will be imported on first use in build_visualization()
 _plotly_go = None
 _plotly_pio = None
+
+_MASK_LABEL_NAMES = {5: "L1", 4: "L2", 3: "L3", 2: "L4", 1: "L5"}
 
 def _ensure_plotly_imports():
     """Lazy-load Plotly only when needed (saves ~1-2 seconds on startup)"""
@@ -241,6 +244,206 @@ def _display_volume_title(volume_name, max_length=72):
     return stem[: max_length - reserved] + ellipsis + suffix
 
 
+def _normalize_scene_camera(camera, fallback_eye):
+    if camera is None:
+        return {"eye": fallback_eye}
+    if not isinstance(camera, dict):
+        return {"eye": fallback_eye}
+
+    if "eye" in camera:
+        return camera
+
+    if all(axis in camera for axis in ("x", "y", "z")):
+        return {"eye": camera}
+
+    return {"eye": fallback_eye}
+
+
+def _mask_controls_overlay_html(control_meta):
+    mask_trace_indices = list(control_meta.get("mask_trace_indices", []))
+    mask_labels = list(control_meta.get("mask_labels", []))
+    mask_visibilities = list(control_meta.get("mask_visibilities", []))
+    screw_trace_indices = list(control_meta.get("screw_trace_indices", []))
+    screw_trace_labels = list(control_meta.get("screw_trace_labels", []))
+    trajectory_trace_indices = list(control_meta.get("trajectory_trace_indices", []))
+    trajectory_trace_labels = list(control_meta.get("trajectory_trace_labels", []))
+    entry_trace_indices = list(control_meta.get("entry_trace_indices", []))
+    entry_trace_labels = list(control_meta.get("entry_trace_labels", []))
+    tip_trace_indices = list(control_meta.get("tip_trace_indices", []))
+    tip_trace_labels = list(control_meta.get("tip_trace_labels", []))
+
+    if not mask_trace_indices or not mask_labels:
+        return ""
+
+    items = []
+    for idx, trace_index in enumerate(mask_trace_indices):
+        label = mask_labels[idx] if idx < len(mask_labels) else f"Mask {idx + 1}"
+        visible = mask_visibilities[idx] if idx < len(mask_visibilities) else True
+        checked_attr = " checked" if visible else ""
+        items.append(
+            f"""
+            <label class="mask-toggle-item">
+              <input type="checkbox" data-trace-index="{int(trace_index)}"{checked_attr}>
+              <span>{_html.escape(str(label))}</span>
+            </label>
+            """
+        )
+
+    items_html = "".join(items)
+    indices_json = json.dumps(mask_trace_indices)
+    labels_json = json.dumps(mask_labels)
+    visibilities_json = json.dumps(mask_visibilities)
+    screw_indices_json = json.dumps(screw_trace_indices)
+    screw_labels_json = json.dumps(screw_trace_labels)
+    trajectory_indices_json = json.dumps(trajectory_trace_indices)
+    trajectory_labels_json = json.dumps(trajectory_trace_labels)
+    entry_indices_json = json.dumps(entry_trace_indices)
+    entry_labels_json = json.dumps(entry_trace_labels)
+    tip_indices_json = json.dumps(tip_trace_indices)
+    tip_labels_json = json.dumps(tip_trace_labels)
+    return f"""
+<div class="mask-visibility-overlay">
+  <div class="mask-visibility-title">Mask Visibility</div>
+  <div class="mask-visibility-subtitle">Toggle vertebra surfaces in real time.</div>
+  <div class="mask-toggle-list">
+    {items_html}
+  </div>
+</div>
+<script>
+  window.__maskTraceIndices = {indices_json};
+  window.__maskLabels = {labels_json};
+  window.__maskVisibilities = {visibilities_json};
+  window.__screwTraceIndices = {screw_indices_json};
+  window.__screwTraceLabels = {screw_labels_json};
+  window.__screwTraceVertebraLabels = {json.dumps(control_meta.get("screw_trace_vertebra_labels", []))};
+  window.__trajectoryTraceIndices = {trajectory_indices_json};
+  window.__trajectoryTraceLabels = {trajectory_labels_json};
+  window.__trajectoryTraceVertebraLabels = {json.dumps(control_meta.get("trajectory_trace_vertebra_labels", []))};
+  window.__entryTraceIndices = {entry_indices_json};
+  window.__entryTraceLabels = {entry_labels_json};
+  window.__entryTraceVertebraLabels = {json.dumps(control_meta.get("entry_trace_vertebra_labels", []))};
+  window.__tipTraceIndices = {tip_indices_json};
+  window.__tipTraceLabels = {tip_labels_json};
+  window.__tipTraceVertebraLabels = {json.dumps(control_meta.get("tip_trace_vertebra_labels", []))};
+
+  const defaultDisplayMode = {json.dumps("max_diameter" if str(control_meta.get("initial_screw_mode", "screws")) == "screws" else "trajectories")};
+  window.__displayMode = window.__displayMode || defaultDisplayMode;
+  window.__showEntryMarkers = window.__showEntryMarkers !== undefined ? window.__showEntryMarkers : {json.dumps(bool(control_meta.get("show_entry_markers", True)))};
+  window.__showTipMarkers = window.__showTipMarkers !== undefined ? window.__showTipMarkers : {json.dumps(bool(control_meta.get("show_tip_markers", False)))};
+
+  function normalizeLabel(value) {{
+    return String(value || '').trim().toUpperCase();
+  }}
+
+  function normalizeMaskKey(value) {{
+    const label = normalizeLabel(value);
+    if (!label) {{
+      return '';
+    }}
+    const match = label.match(/^(L\\d+|T\\d+|C\\d+|S\\d+)/);
+    if (match) {{
+      return match[1];
+    }}
+    const pieces = label.split(/[^A-Z0-9]+/).filter(Boolean);
+    return pieces.length ? pieces[0] : label;
+  }}
+
+  function buildVisibility(traceLabels, vertebraLabels, maskStateMap, modeRequired, baseVisible) {{
+    return traceLabels.map(function (traceLabel, idx) {{
+      const labelSource = vertebraLabels && vertebraLabels[idx] !== undefined ? vertebraLabels[idx] : traceLabel;
+      const label = normalizeMaskKey(labelSource) || normalizeMaskKey(traceLabel);
+      const maskVisible = maskStateMap[label] !== undefined ? !!maskStateMap[label] : true;
+      const modeVisible = !modeRequired || window.__displayMode === modeRequired;
+      return maskVisible && modeVisible && baseVisible;
+    }});
+  }}
+
+  function buildMaskStateMap() {{
+    const stateMap = {{}};
+    (window.__maskLabels || []).forEach(function (label, idx) {{
+      const key = normalizeMaskKey(label);
+      stateMap[key] = !!(window.__maskVisibilities || [])[idx];
+    }});
+    return stateMap;
+  }}
+
+  window.applyMaskVisibilityState = function () {{
+    const plot = document.querySelector('.js-plotly-plot');
+    if (!plot || !window.Plotly) {{
+      return;
+    }}
+    const maskStateMap = buildMaskStateMap();
+    Plotly.restyle(plot, {{
+      visible: window.__maskVisibilities.slice()
+    }}, window.__maskTraceIndices || []);
+    if (window.__screwTraceIndices && window.__screwTraceIndices.length) {{
+      Plotly.restyle(plot, {{
+        visible: buildVisibility(window.__screwTraceLabels || [], window.__screwTraceVertebraLabels || [], maskStateMap, 'max_diameter', true)
+      }}, window.__screwTraceIndices);
+    }}
+    if (window.__trajectoryTraceIndices && window.__trajectoryTraceIndices.length) {{
+      Plotly.restyle(plot, {{
+        visible: buildVisibility(window.__trajectoryTraceLabels || [], window.__trajectoryTraceVertebraLabels || [], maskStateMap, 'trajectories', true)
+      }}, window.__trajectoryTraceIndices);
+    }}
+    if (window.__entryTraceIndices && window.__entryTraceIndices.length) {{
+      Plotly.restyle(plot, {{
+        visible: buildVisibility(window.__entryTraceLabels || [], window.__entryTraceVertebraLabels || [], maskStateMap, null, !!window.__showEntryMarkers)
+      }}, window.__entryTraceIndices);
+    }}
+    if (window.__tipTraceIndices && window.__tipTraceIndices.length) {{
+      Plotly.restyle(plot, {{
+        visible: buildVisibility(window.__tipTraceLabels || [], window.__tipTraceVertebraLabels || [], maskStateMap, null, !!window.__showTipMarkers)
+      }}, window.__tipTraceIndices);
+    }}
+  }};
+
+  function bindMaskVisibilityControls() {{
+    const plot = document.querySelector('.js-plotly-plot');
+    const panel = document.querySelector('.mask-visibility-overlay');
+    if (!plot || !panel || !window.Plotly) {{
+      return;
+    }}
+
+    panel.querySelectorAll('input[data-trace-index]').forEach(function (input) {{
+      if (input.getAttribute('data-mask-bound') === '1') {{
+        return;
+      }}
+      input.setAttribute('data-mask-bound', '1');
+      input.addEventListener('change', function () {{
+        const traceIndex = parseInt(this.getAttribute('data-trace-index'), 10);
+        if (Number.isNaN(traceIndex)) {{
+          return;
+        }}
+        const idx = window.__maskTraceIndices.indexOf(traceIndex);
+        if (idx >= 0) {{
+          window.__maskVisibilities[idx] = this.checked;
+          window.applyMaskVisibilityState();
+        }}
+      }});
+    }});
+  }}
+
+  document.addEventListener('DOMContentLoaded', function () {{
+    bindMaskVisibilityControls();
+    window.applyMaskVisibilityState();
+    setTimeout(bindMaskVisibilityControls, 300);
+    setTimeout(bindMaskVisibilityControls, 900);
+    setTimeout(window.applyMaskVisibilityState, 300);
+    setTimeout(window.applyMaskVisibilityState, 900);
+  }});
+</script>
+"""
+
+
+def _mask_label_name(label_value):
+    try:
+        label_int = int(round(float(label_value)))
+    except (TypeError, ValueError):
+        return f"Label {label_value}"
+    return _MASK_LABEL_NAMES.get(label_int, f"Label {label_int}")
+
+
 def _figure_without_embedded_controls(fig):
     qt_fig_dict = fig.to_plotly_json()
     layout = qt_fig_dict.setdefault("layout", {})
@@ -279,6 +482,17 @@ def _result_legend_label(result):
     if side:
         return side
     return "Trajectory"
+
+
+def _result_mask_label(result):
+    vertebra = str(result.get("vertebra", "")).strip().upper()
+    if vertebra:
+        return vertebra
+
+    legend_label = _result_legend_label(result).strip().upper()
+    if "-" in legend_label:
+        return legend_label.split("-", 1)[0].strip()
+    return legend_label
 
 
 def _mesh_hover_template(volume_name, show_coordinates):
@@ -321,8 +535,23 @@ def _resolve_kicker(value, enabled_by_default):
     return bool(value)
 
 
-def _compute_scene_ranges(verts_world, results_list, show_safety_planes=False, fallback_diameter=None):
-    points = [np.asarray(verts_world, dtype=float)]
+def _compute_scene_ranges(
+    verts_world,
+    results_list,
+    show_safety_planes=False,
+    fallback_diameter=None,
+    mask_meshes=None,
+):
+    points = []
+    if mask_meshes:
+        for mesh in mask_meshes:
+            verts = mesh.get("verts_world")
+            if verts is not None:
+                points.append(np.asarray(verts, dtype=float))
+    elif verts_world is not None:
+        points.append(np.asarray(verts_world, dtype=float))
+    if not points:
+        return [[-50.0, 50.0], [-50.0, 50.0], [-50.0, 50.0]]
     radial_padding = 0.0
 
     for result in results_list:
@@ -568,6 +797,7 @@ def _build_result_traces(
     depth = np.linalg.norm(direction)
     side_style = _side_style(result.get("side", ""), style)
     legend_label = _result_legend_label(result)
+    mask_label = _result_mask_label(result)
     legend_group = f"{legend_label}::{side_style['legendgroup']}"
     screw_hover_on = _marker_hover_template(f"{legend_label} Screw", result, entry, True)
     screw_hover_off = _marker_hover_template(f"{legend_label} Screw", result, entry, False)
@@ -634,6 +864,8 @@ def _build_result_traces(
         "screw_traces": screw_traces,
         "screw_hover_on_templates": screw_hover_on_templates,
         "screw_hover_off_templates": screw_hover_off_templates,
+        "screw_trace_labels": [legend_label] * len(screw_traces),
+        "screw_trace_vertebra_labels": [mask_label] * len(screw_traces),
         "trajectory_traces": [
             go.Scatter3d(
                 x=[entry[0], tip[0]],
@@ -648,6 +880,8 @@ def _build_result_traces(
                 visible=initial_trajectory_visibility,
             )
         ],
+        "trajectory_trace_labels": [legend_label],
+        "trajectory_trace_vertebra_labels": [mask_label],
         "trajectory_hover_on_templates": [trajectory_hover_on],
         "trajectory_hover_off_templates": [trajectory_hover_off],
         "entry_marker_traces": [
@@ -672,6 +906,8 @@ def _build_result_traces(
                 visible=show_entry_markers,
             )
         ],
+        "entry_trace_labels": [legend_label],
+        "entry_trace_vertebra_labels": [mask_label],
         "entry_hover_on_templates": [entry_hover_on],
         "entry_hover_off_templates": [entry_hover_off],
         "tip_marker_traces": [
@@ -693,6 +929,8 @@ def _build_result_traces(
                 visible=show_tip_markers,
             )
         ],
+        "tip_trace_labels": [legend_label],
+        "tip_trace_vertebra_labels": [mask_label],
         "tip_hover_on_templates": [tip_hover_on],
         "tip_hover_off_templates": [tip_hover_off],
         "safety_plane_traces": safety_plane_traces,
@@ -703,6 +941,8 @@ def build_visualization(
     verts_world,
     faces,
     results_list,
+    mask_meshes=None,
+    camera=None,
     volume_path=None,
     screw_mode="threaded",
     theme="dark",
@@ -728,9 +968,6 @@ def build_visualization(
     if mesh_opacity is None:
         mesh_opacity = style["mesh_opacity"]
 
-    raw_verts_world = np.asarray(verts_world, dtype=np.float32)
-    raw_faces = np.asarray(faces, dtype=np.int32)
-
     neon_trajectories = _resolve_kicker(v2_neon_trajectories, neon_trajectories)
     gold_screws = _resolve_kicker(v2_gold_screws, gold_screws)
     threaded_screws = _resolve_kicker(v2_threaded_screws, threaded_screws)
@@ -740,38 +977,124 @@ def build_visualization(
         eff_screw_mode = "cylinder"
     show_screw_meshes = eff_screw_mode != "none"
     initial_trajectory_visibility = show_trajectory_lines and not show_screw_meshes
-    screw_resolution = _screw_resolution(raw_faces.shape[0], len(results_list))
+    mask_meshes = list(mask_meshes or [])
+    if not mask_meshes and verts_world is not None and faces is not None:
+        mask_meshes = [
+            {
+                "label": "Mask",
+                "value": None,
+                "verts_world": np.asarray(verts_world, dtype=np.float32),
+                "faces": np.asarray(faces, dtype=np.int32),
+                "visible": True,
+            }
+        ]
+
+    screw_face_count = 0
+    if mask_meshes:
+        first_faces = mask_meshes[0].get("faces")
+        if first_faces is not None:
+            screw_face_count = np.asarray(first_faces).shape[0]
+    elif faces is not None:
+        screw_face_count = np.asarray(faces).shape[0]
+    screw_resolution = _screw_resolution(screw_face_count, len(results_list))
+
     scene_ranges = _compute_scene_ranges(
-        raw_verts_world,
+        verts_world,
         results_list,
         show_safety_planes=show_safety_planes,
         fallback_diameter=fallback_diameter,
+        mask_meshes=mask_meshes,
     )
 
     fig = go.Figure()
     volume_name, timestamp = _volume_metadata(volume_path)
     mesh_hover_on = _mesh_hover_template(volume_name, True)
     mesh_hover_off = _mesh_hover_template(volume_name, False)
-    _add_mesh(
-        fig,
-        raw_verts_world,
-        raw_faces,
-        volume_name,
-        timestamp,
-        mesh_opacity,
-        style,
-        hovertemplate=mesh_hover_on if show_hover_coordinates else mesh_hover_off,
+    mask_trace_indices = []
+    mask_labels = []
+    mask_visibilities = []
+    for idx, mesh in enumerate(mask_meshes):
+        mesh_verts = mesh.get("verts_world")
+        mesh_faces = mesh.get("faces")
+        if mesh_verts is None or mesh_faces is None:
+            continue
+        verts_array = np.asarray(mesh_verts, dtype=np.float32)
+        faces_array = np.asarray(mesh_faces, dtype=np.int32)
+        label = str(mesh.get("label") or "Mask")
+        value = mesh.get("value", None)
+        visible = bool(mesh.get("visible", True))
+        color = mesh.get("color", style["mesh_color"])
+        trace_hover_on = mesh.get("hovertemplate_on") or (
+            f"<b>{label}</b><br>X: %{{x:.2f}} | Y: %{{y:.2f}} | Z: %{{z:.2f}}<extra></extra>"
+            if show_hover_coordinates
+            else "<extra></extra>"
+        )
+        trace_hover_off = mesh.get("hovertemplate_off") or "<extra></extra>"
+        fig.add_trace(
+            go.Mesh3d(
+                x=verts_array[:, 0],
+                y=verts_array[:, 1],
+                z=verts_array[:, 2],
+                i=faces_array[:, 0],
+                j=faces_array[:, 1],
+                k=faces_array[:, 2],
+                opacity=mesh.get("opacity", mesh_opacity),
+                color=color,
+                name=label,
+                hovertemplate=trace_hover_on if show_hover_coordinates else trace_hover_off,
+                lighting=style["mesh_lighting"],
+                lightposition=style["mesh_lightposition"],
+                showscale=False,
+                showlegend=False,
+                visible=visible,
+            )
+        )
+        mask_trace_indices.append(len(fig.data) - 1)
+        mask_labels.append(label)
+        mask_visibilities.append(visible)
+
+    bbox_points = []
+    if mask_meshes:
+        for mesh in mask_meshes:
+            mesh_verts = mesh.get("verts_world")
+            if mesh_verts is not None:
+                bbox_points.append(np.asarray(mesh_verts, dtype=np.float32))
+    if bbox_points:
+        bbox_verts = np.vstack(bbox_points)
+    elif verts_world is not None:
+        bbox_verts = np.asarray(verts_world, dtype=np.float32)
+    else:
+        bbox_verts = None
+
+    bounding_box_traces = []
+    if bbox_verts is not None:
+        bounding_box_traces = _add_bounding_box(fig, bbox_verts, style["bounding_box"], return_trace=True) or []
+        for trace in bounding_box_traces:
+            trace.visible = show_bounding_box
+            fig.add_trace(trace)
+
+    scene_spans = [max(float(bounds[1] - bounds[0]), 1e-6) for bounds in scene_ranges]
+    max_scene_span = max(scene_spans) if scene_spans else 1.0
+    scene_aspectratio = dict(
+        x=scene_spans[0] / max_scene_span if scene_spans else 1.0,
+        y=scene_spans[1] / max_scene_span if len(scene_spans) > 1 else 1.0,
+        z=scene_spans[2] / max_scene_span if len(scene_spans) > 2 else 1.0,
     )
-    bounding_box_traces = _add_bounding_box(fig, raw_verts_world, style["bounding_box"], return_trace=True) or []
-    for trace in bounding_box_traces:
-        trace.visible = show_bounding_box
-        fig.add_trace(trace)
+    scene_camera = _normalize_scene_camera(camera, style["camera_eye"])
 
     screw_traces = []
     trajectory_traces = []
     entry_marker_traces = []
     tip_marker_traces = []
     safety_plane_traces = []
+    screw_trace_labels = []
+    screw_trace_vertebra_labels = []
+    trajectory_trace_labels = []
+    trajectory_trace_vertebra_labels = []
+    entry_trace_labels = []
+    entry_trace_vertebra_labels = []
+    tip_trace_labels = []
+    tip_trace_vertebra_labels = []
     screw_hover_on_templates = []
     screw_hover_off_templates = []
     trajectory_hover_on_templates = []
@@ -820,15 +1143,23 @@ def build_visualization(
 
     for trace_group in result_traces:
         screw_traces.extend(trace_group["screw_traces"])
+        screw_trace_labels.extend(trace_group["screw_trace_labels"])
+        screw_trace_vertebra_labels.extend(trace_group["screw_trace_vertebra_labels"])
         screw_hover_on_templates.extend(trace_group["screw_hover_on_templates"])
         screw_hover_off_templates.extend(trace_group["screw_hover_off_templates"])
         trajectory_traces.extend(trace_group["trajectory_traces"])
+        trajectory_trace_labels.extend(trace_group["trajectory_trace_labels"])
+        trajectory_trace_vertebra_labels.extend(trace_group["trajectory_trace_vertebra_labels"])
         trajectory_hover_on_templates.extend(trace_group["trajectory_hover_on_templates"])
         trajectory_hover_off_templates.extend(trace_group["trajectory_hover_off_templates"])
         entry_marker_traces.extend(trace_group["entry_marker_traces"])
+        entry_trace_labels.extend(trace_group["entry_trace_labels"])
+        entry_trace_vertebra_labels.extend(trace_group["entry_trace_vertebra_labels"])
         entry_hover_on_templates.extend(trace_group["entry_hover_on_templates"])
         entry_hover_off_templates.extend(trace_group["entry_hover_off_templates"])
         tip_marker_traces.extend(trace_group["tip_marker_traces"])
+        tip_trace_labels.extend(trace_group["tip_trace_labels"])
+        tip_trace_vertebra_labels.extend(trace_group["tip_trace_vertebra_labels"])
         tip_hover_on_templates.extend(trace_group["tip_hover_on_templates"])
         tip_hover_off_templates.extend(trace_group["tip_hover_off_templates"])
         safety_plane_traces.extend(trace_group["safety_plane_traces"])
@@ -838,7 +1169,7 @@ def build_visualization(
     if assembled_traces:
         fig.add_traces(assembled_traces)
 
-    n_mesh = 1
+    n_mesh = len(mask_trace_indices)
     n_bbox = len(bounding_box_traces)
     n_screws = len(screw_traces)
     n_traj = len(trajectory_traces)
@@ -933,7 +1264,8 @@ def build_visualization(
         paper_bgcolor=style["paper_bgcolor"],
         plot_bgcolor=style["plot_bgcolor"],
         scene=dict(
-            aspectmode="data",
+            aspectmode="manual",
+            aspectratio=scene_aspectratio,
             bgcolor=style["scene_bgcolor"],
             xaxis=dict(
                 showbackground=style["show_axes"],
@@ -956,7 +1288,7 @@ def build_visualization(
                 zeroline=False,
                 range=scene_ranges[2],
             ),
-            camera=dict(eye=style["camera_eye"]),
+            camera=scene_camera,
         ),
         height=760,
         # Keep the scene full-height; the legend floats inside the plot instead of reserving a blank strip.
@@ -997,13 +1329,30 @@ def build_visualization(
             font=dict(color=style["title_font_color"]),
             orientation="v",
             yanchor="top",
-            y=0.98,
+            y=0.96,
             xanchor="left",
             x=0.02,
             traceorder="normal",
+            itemsizing="constant",
         ),
         meta=dict(
-            mesh_trace_index=0,
+            mesh_trace_index=mask_trace_indices[0] if mask_trace_indices else 0,
+            mesh_trace_indices=mask_trace_indices,
+            mask_trace_indices=mask_trace_indices,
+            mask_labels=mask_labels,
+            mask_visibilities=mask_visibilities,
+            screw_trace_indices=screw_indices,
+            screw_trace_labels=screw_trace_labels,
+            screw_trace_vertebra_labels=screw_trace_vertebra_labels,
+            trajectory_trace_indices=trajectory_indices,
+            trajectory_trace_labels=trajectory_trace_labels,
+            trajectory_trace_vertebra_labels=trajectory_trace_vertebra_labels,
+            entry_trace_indices=entry_indices,
+            entry_trace_labels=entry_trace_labels,
+            entry_trace_vertebra_labels=entry_trace_vertebra_labels,
+            tip_trace_indices=tip_indices,
+            tip_trace_labels=tip_trace_labels,
+            tip_trace_vertebra_labels=tip_trace_vertebra_labels,
             bbox_indices=bbox_indices,
             screw_mode_indices=screw_mode_indices,
             screw_mode_screws_vis=screw_mode_screws_vis,
@@ -1017,6 +1366,7 @@ def build_visualization(
             hover_templates_off=[mesh_hover_off] + screw_hover_off_templates + trajectory_hover_off_templates + entry_hover_off_templates + tip_hover_off_templates,
             legend_hover_on_texts=legend_hover_on_texts,
             legend_hover_off_texts=legend_hover_off_texts,
+            initial_camera=scene_camera,
         ),
         transition=dict(duration=0),
         uirevision="unified-visualizer",
@@ -1061,6 +1411,7 @@ def _build_qt_window(fig, window_title):
         control_meta = control_meta.to_plotly_json()
     legend_hover_texts_on = json.dumps(control_meta.get("legend_hover_on_texts", []))
     legend_hover_texts_off = json.dumps(control_meta.get("legend_hover_off_texts", []))
+    mask_overlay_html = _mask_controls_overlay_html(control_meta)
 
     qt_fig = _figure_without_embedded_controls(fig)
     plotly_bundle_uri = Path(_ensure_plotlyjs_bundle()).as_uri()
@@ -1127,10 +1478,60 @@ def _build_qt_window(fig, window_title):
     .modebar-btn.active {{
       background: rgba(91, 243, 255, 0.26) !important;
     }}
+    .mask-visibility-overlay {{
+        position: absolute;
+        top: 392px;
+        left: 12px;
+        width: 192px;
+        max-height: 44vh;
+      overflow-y: auto;
+      padding: 12px 12px 10px;
+      border-radius: 12px;
+      background: rgba(10, 16, 26, 0.74);
+      border: 1px solid rgba(123, 229, 255, 0.24);
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(8px);
+      z-index: 12;
+    }}
+    .mask-visibility-title {{
+      color: #F7FAFC;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }}
+    .mask-visibility-subtitle {{
+      color: #CBD5E1;
+      font-size: 11px;
+      line-height: 1.35;
+      margin-bottom: 10px;
+    }}
+    .mask-toggle-list {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }}
+    .mask-toggle-item {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #F7FAFC;
+      font-size: 12px;
+      line-height: 1.2;
+      cursor: pointer;
+      user-select: none;
+    }}
+    .mask-toggle-item input {{
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: #4BD3FF;
+      cursor: pointer;
+    }}
   </style>
 </head>
 <body>
 {pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%", config=dict(displayModeBar=True, displaylogo=False, scrollZoom=True, modeBarButtonsToAdd=["v1hovermode", "toggleSpikelines"]))}
+{mask_overlay_html}
 <script>
     window.__legendHoverTexts = {legend_hover_texts_off};
     window.__legendHoverTextsOn = {legend_hover_texts_on};
@@ -1190,6 +1591,28 @@ def _build_qt_window(fig, window_title):
         }});
     }}
 
+    function bindCameraPersistence() {{
+        const plot = document.querySelector('.js-plotly-plot');
+        if (!plot) {{
+            return;
+        }}
+        if (plot.getAttribute('data-camera-bound') === '1') {{
+            return;
+        }}
+        plot.setAttribute('data-camera-bound', '1');
+
+        function syncCamera() {{
+            if (plot.layout && plot.layout.scene && plot.layout.scene.camera) {{
+                window.__plotlyCamera = JSON.parse(JSON.stringify(plot.layout.scene.camera));
+            }}
+        }}
+
+        syncCamera();
+        plot.on('plotly_relayout', function () {{
+            setTimeout(syncCamera, 0);
+        }});
+    }}
+
     window.updateLegendHoverTexts = function (texts) {{
         window.__legendHoverTexts = Array.isArray(texts) ? texts : [];
         bindLegendHoverTooltips();
@@ -1201,13 +1624,16 @@ def _build_qt_window(fig, window_title):
         el.style.cursor = 'pointer';
       }});
     }}
-    applyPointerCursor();
+        applyPointerCursor();
         bindLegendHoverTooltips();
-    setTimeout(applyPointerCursor, 300);
-    setTimeout(applyPointerCursor, 900);
+        bindCameraPersistence();
+        setTimeout(applyPointerCursor, 300);
+        setTimeout(applyPointerCursor, 900);
         setTimeout(bindLegendHoverTooltips, 300);
         setTimeout(bindLegendHoverTooltips, 900);
-  }});
+        setTimeout(bindCameraPersistence, 300);
+        setTimeout(bindCameraPersistence, 900);
+    }});
 </script>
 </body>
 </html>
@@ -1226,7 +1652,7 @@ def _build_qt_window(fig, window_title):
     window.setWindowTitle(window_title)
 
     container = QWidget()
-    layout = QVBoxLayout(container)
+    layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
     container.setStyleSheet(f"background-color: {paper_bg};")
@@ -1378,14 +1804,21 @@ def _build_qt_window(fig, window_title):
     panel_layout.addWidget(opacity_slider)
     panel_layout.addStretch(1)
 
+    right_widget = QWidget()
+    right_layout = QVBoxLayout(right_widget)
+    right_layout.setContentsMargins(0, 0, 0, 0)
+    right_layout.setSpacing(0)
+
     view = QWebEngineView()
     view.load(QUrl.fromLocalFile(html_path))
-    layout.addWidget(view)
-    layout.setStretchFactor(view, 1)  # Make plot expand to fill available space
+    right_layout.addWidget(view)
+    right_layout.setStretchFactor(view, 1)  # Make plot expand to fill available space
     # Insert the panel widget just below the plot title/legend, above the plot content
-    layout.insertWidget(1, panel_widget)
-    layout.setStretchFactor(panel_widget, 0)  # Keep panel at fixed height
-    layout.addWidget(export_button)
+    right_layout.insertWidget(1, panel_widget)
+    right_layout.setStretchFactor(panel_widget, 0)  # Keep panel at fixed height
+    right_layout.addWidget(export_button)
+
+    layout.addWidget(right_widget, 1)
 
     interactive_controls = [
         show_screws_button,
@@ -1413,13 +1846,15 @@ def _build_qt_window(fig, window_title):
         )
 
     def set_mesh_opacity(opacity_value):
-        mesh_trace_index = int(control_meta.get("mesh_trace_index", 0))
+        mesh_trace_indices = list(control_meta.get("mesh_trace_indices", []))
+        if not mesh_trace_indices:
+            mesh_trace_indices = [int(control_meta.get("mesh_trace_index", 0))]
         run_plotly_js(
             f"""
             (function() {{
                 const plot = document.querySelector('.js-plotly-plot');
                 if (!plot || !window.Plotly) return;
-                Plotly.restyle(plot, {{opacity: [{opacity_value:.2f}]}}, [{mesh_trace_index}]);
+                Plotly.restyle(plot, {{opacity: [{opacity_value:.2f}]}}, {json.dumps(mesh_trace_indices)});
             }})();
             """
         )
@@ -1524,6 +1959,7 @@ def visualize_surgical_plan(
     vertsWorld,
     faces,
     resultsList,
+    mask_meshes=None,
     volume_path=None,
     screw_mode="threaded",
     theme="dark",
@@ -1548,6 +1984,7 @@ def visualize_surgical_plan(
         verts_world=vertsWorld,
         faces=faces,
         results_list=resultsList,
+        mask_meshes=mask_meshes,
         volume_path=volume_path,
         screw_mode=screw_mode,
         theme=theme,

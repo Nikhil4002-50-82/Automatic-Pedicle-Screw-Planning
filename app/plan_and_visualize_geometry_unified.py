@@ -12,17 +12,20 @@ from PyQt6.QtCore import QCoreApplication, QThread, QTimer, Qt, QUrl, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QHeaderView,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QFrame,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSlider,
     QSizePolicy,
+    QScrollArea,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -42,8 +45,11 @@ from visualizer_unified import (
     _ensure_plotly_imports,
     _ensure_plotlyjs_bundle,
     _figure_without_embedded_controls,
+    _mask_controls_overlay_html,
     build_visualization,
 )
+
+_MASK_LABEL_NAMES = {5: "L1", 4: "L2", 3: "L3", 2: "L4", 1: "L5"}
 
 
 class PlanningWorker(QThread):
@@ -402,15 +408,44 @@ def build_parser():
     return parser
 
 
-def _build_mask_mesh(seg_path):
+def _mask_label_name(label_value):
+    try:
+        label_int = int(round(float(label_value)))
+    except (TypeError, ValueError):
+        return f"Label {label_value}"
+    return _MASK_LABEL_NAMES.get(label_int, f"Label {label_int}")
+
+
+def _build_mask_meshes(seg_path):
     data, _, affine = run_nifti_load(seg_path)
-    mask = data > 0
-    if not mask.any():
+    labels = [value for value in np.unique(data) if value > 0]
+    if not labels:
         raise ValueError("The selected segmentation does not contain any labeled voxels.")
 
-    verts, faces, _, _ = marching_cubes(mask.astype("uint8"), level=0.5)
-    verts_world = nib.affines.apply_affine(affine, verts)
-    return verts_world, faces, mask.shape
+    mask_meshes = []
+    for label_value in sorted(labels, reverse=True):
+        mask = np.isclose(data, label_value)
+        if not mask.any():
+            continue
+        try:
+            verts, faces, _, _ = marching_cubes(mask.astype("uint8"), level=0.5)
+        except ValueError:
+            continue
+        verts_world = nib.affines.apply_affine(affine, verts)
+        mask_meshes.append(
+            {
+                "label": _mask_label_name(label_value),
+                "value": float(label_value),
+                "verts_world": verts_world,
+                "faces": faces,
+                "visible": True,
+            }
+        )
+
+    if not mask_meshes:
+        raise ValueError("The selected segmentation did not yield any renderable label surfaces.")
+
+    return mask_meshes, data.shape
 
 
 def run_nifti_load(seg_path):
@@ -449,6 +484,7 @@ def _figure_to_html(fig):
         control_meta = control_meta.to_plotly_json()
     legend_hover_texts_on = json.dumps(control_meta.get("legend_hover_on_texts", []))
     legend_hover_texts_off = json.dumps(control_meta.get("legend_hover_off_texts", []))
+    mask_overlay_html = _mask_controls_overlay_html(control_meta)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -478,6 +514,55 @@ def _figure_to_html(fig):
     .legendtoggle {{
       cursor: pointer !important;
     }}
+    .mask-visibility-overlay {{
+        position: absolute;
+        top: 392px;
+        left: 12px;
+        width: 192px;
+        max-height: 44vh;
+        overflow-y: auto;
+        padding: 12px 12px 10px;
+        border-radius: 12px;
+        background: rgba(10, 16, 26, 0.74);
+        border: 1px solid rgba(123, 229, 255, 0.24);
+        box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+        backdrop-filter: blur(8px);
+        z-index: 12;
+    }}
+    .mask-visibility-title {{
+        color: #F7FAFC;
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 4px;
+    }}
+    .mask-visibility-subtitle {{
+        color: #CBD5E1;
+        font-size: 11px;
+        line-height: 1.35;
+        margin-bottom: 10px;
+    }}
+    .mask-toggle-list {{
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }}
+    .mask-toggle-item {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #F7FAFC;
+        font-size: 12px;
+        line-height: 1.2;
+        cursor: pointer;
+        user-select: none;
+    }}
+    .mask-toggle-item input {{
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        accent-color: #4BD3FF;
+        cursor: pointer;
+    }}
         .legend-hover-tooltip {{
             position: fixed;
             display: none;
@@ -498,6 +583,7 @@ def _figure_to_html(fig):
 </head>
 <body>
 {pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%", config=dict(displayModeBar=True, displaylogo=False, scrollZoom=True, modeBarButtonsToAdd=["v1hovermode", "toggleSpikelines"]))}
+{mask_overlay_html}
 <script>
     window.__legendHoverTexts = {legend_hover_texts_off};
     window.__legendHoverTextsOn = {legend_hover_texts_on};
@@ -562,6 +648,28 @@ def _figure_to_html(fig):
         bindLegendHoverTooltips();
     }};
 
+    function bindCameraPersistence() {{
+        const plot = document.querySelector('.js-plotly-plot');
+        if (!plot) {{
+            return;
+        }}
+        if (plot.getAttribute('data-camera-bound') === '1') {{
+            return;
+        }}
+        plot.setAttribute('data-camera-bound', '1');
+
+        function syncCamera() {{
+            if (plot.layout && plot.layout.scene && plot.layout.scene.camera) {{
+                window.__plotlyCamera = JSON.parse(JSON.stringify(plot.layout.scene.camera));
+            }}
+        }}
+
+        syncCamera();
+        plot.on('plotly_relayout', function () {{
+            setTimeout(syncCamera, 0);
+        }});
+    }}
+
     document.addEventListener('DOMContentLoaded', function () {{
         function applyPointerCursor() {{
             document.querySelectorAll('.modebar-btn, g.updatemenu-button, g.updatemenu-button *, g.slider *, .legendtoggle').forEach(function (el) {{
@@ -570,10 +678,13 @@ def _figure_to_html(fig):
         }}
         applyPointerCursor();
         bindLegendHoverTooltips();
+        bindCameraPersistence();
         setTimeout(applyPointerCursor, 300);
         setTimeout(applyPointerCursor, 900);
         setTimeout(bindLegendHoverTooltips, 300);
         setTimeout(bindLegendHoverTooltips, 900);
+        setTimeout(bindCameraPersistence, 300);
+        setTimeout(bindCameraPersistence, 900);
     }});
 </script>
 </body>
@@ -598,8 +709,7 @@ class GeometryPlanningWindow(QMainWindow):
         super().__init__()
         self._args = args
         self._current_seg_path = None
-        self._current_verts = None
-        self._current_faces = None
+        self._current_mask_meshes = None
         self._current_results = []
         self._current_display_mode = "trajectories"
         self._current_bbox_visible = False
@@ -612,6 +722,8 @@ class GeometryPlanningWindow(QMainWindow):
         self._view_ready = False
         self._pending_mesh_opacity = None
         self._show_hover_coordinates = False
+        self._mask_visibility = {}
+        self._scene_camera = None
         self._last_directory = os.path.expanduser("~/Downloads")
 
         self.setWindowTitle("Pedicle Screw Planner Visualization")
@@ -801,11 +913,9 @@ class GeometryPlanningWindow(QMainWindow):
         controls_layout.addWidget(self.console_button)
         controls_layout.addStretch(1)
 
-        root_layout.addWidget(controls_panel)
         root_layout.setStretchFactor(self.view, 1)
 
         self.export_button.setMinimumHeight(42)
-        root_layout.addWidget(self.export_button)
 
         self.load_button.clicked.connect(self._load_mask)
         self.load_results_button.clicked.connect(self._load_results)
@@ -822,13 +932,12 @@ class GeometryPlanningWindow(QMainWindow):
         content_layout.addWidget(controls_panel)
         content_layout.addWidget(self.export_button)
 
-        root_layout.addWidget(content_widget, 1)
-
         self._planning_console = PlanningConsole(self)
         self._planning_console.closed.connect(self._hide_planning_console)
         self._planning_console.hide_panel()
         self.console_button.setChecked(False)
 
+        root_layout.addWidget(content_widget, 1)
         self.setCentralWidget(container)
         self._loading_overlay = LoadingOverlay(container)
         self._loading_overlay.hide()
@@ -849,14 +958,15 @@ class GeometryPlanningWindow(QMainWindow):
 
     def _set_busy_state(self, busy):
         self.load_button.setEnabled(not busy)
-        self.load_results_button.setEnabled((not busy) and self._current_verts is not None)
-        self.run_button.setEnabled((not busy) and self._current_verts is not None)
-        self.show_screws_button.setEnabled((not busy) and self._current_verts is not None)
-        self.show_traj_button.setEnabled((not busy) and self._current_verts is not None)
-        self.show_bbox_button.setEnabled((not busy) and self._current_verts is not None)
-        self.hide_bbox_button.setEnabled((not busy) and self._current_verts is not None)
-        self.opacity_slider.setEnabled((not busy) and self._current_verts is not None)
-        self.hover_coords_button.setEnabled((not busy) and self._current_verts is not None)
+        has_mask = self._current_mask_meshes is not None
+        self.load_results_button.setEnabled((not busy) and has_mask)
+        self.run_button.setEnabled((not busy) and has_mask)
+        self.show_screws_button.setEnabled((not busy) and has_mask)
+        self.show_traj_button.setEnabled((not busy) and has_mask)
+        self.show_bbox_button.setEnabled((not busy) and has_mask)
+        self.hide_bbox_button.setEnabled((not busy) and has_mask)
+        self.opacity_slider.setEnabled((not busy) and has_mask)
+        self.hover_coords_button.setEnabled((not busy) and has_mask)
         self.console_button.setEnabled(True)
 
     def _show_planning_console(self, tab_index=0):
@@ -882,13 +992,13 @@ class GeometryPlanningWindow(QMainWindow):
         self._current_display_mode = "max_diameter"
         self.show_screws_button.setChecked(True)
         self.show_traj_button.setChecked(False)
-        self._apply_scene_visibility_state()
+        self._capture_view_state(self._apply_scene_visibility_state)
 
     def _set_trajectory_mode(self):
         self._current_display_mode = "trajectories"
         self.show_screws_button.setChecked(False)
         self.show_traj_button.setChecked(True)
-        self._apply_scene_visibility_state()
+        self._capture_view_state(self._apply_scene_visibility_state)
 
     def _set_bbox_visibility(self, visible):
         self._current_bbox_visible = visible
@@ -896,11 +1006,50 @@ class GeometryPlanningWindow(QMainWindow):
             self.show_bbox_button.setChecked(True)
         else:
             self.hide_bbox_button.setChecked(True)
-        self._apply_scene_visibility_state()
+        self._capture_view_state(self._apply_scene_visibility_state)
 
     def _toggle_hover_coordinates(self):
         self._show_hover_coordinates = self.hover_coords_button.isChecked()
         self._apply_hover_coordinate_state()
+
+    def _capture_view_state(self, callback=None):
+        if not self._view_ready or not self._scene_meta:
+            if callback is not None:
+                callback()
+            return
+
+        script = """
+        (function() {
+            const camera = window.__plotlyCamera || null;
+            const maskStates = Array.from(document.querySelectorAll('.mask-toggle-item input[data-trace-index]'))
+                .map(function (input) { return !!input.checked; });
+            return JSON.stringify({camera: camera, maskStates: maskStates});
+        })();
+        """
+
+        def _on_result(states):
+            payload = None
+            if isinstance(states, str) and states:
+                try:
+                    payload = json.loads(states)
+                except json.JSONDecodeError:
+                    payload = None
+            elif isinstance(states, dict):
+                payload = states
+
+            if isinstance(payload, dict):
+                camera = payload.get("camera")
+                if isinstance(camera, dict):
+                    self._scene_camera = camera
+                mask_states = payload.get("maskStates", [])
+                mask_labels = self._scene_meta.get("mask_labels", [])
+                if isinstance(mask_states, list) and mask_labels:
+                    for idx, label in enumerate(mask_labels):
+                        self._mask_visibility[label] = bool(mask_states[idx]) if idx < len(mask_states) else True
+            if callback is not None:
+                callback()
+
+        self.view.page().runJavaScript(script, _on_result)
 
     def _on_opacity_changed(self, value):
         self.opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}")
@@ -927,7 +1076,7 @@ class GeometryPlanningWindow(QMainWindow):
         return self._planning_console
 
     def _apply_mesh_opacity(self, opacity_value):
-        if self._current_verts is None or self._current_faces is None:
+        if self._current_mask_meshes is None:
             return
 
         if not self._view_ready:
@@ -935,12 +1084,15 @@ class GeometryPlanningWindow(QMainWindow):
             return
 
         self._pending_mesh_opacity = None
+        mesh_indices = self._scene_meta.get("mesh_trace_indices", [])
+        if not mesh_indices:
+            mesh_indices = [int(self._scene_meta.get("mesh_trace_index", 0))]
         self.view.page().runJavaScript(
             f"""
             (function() {{
                 const plot = document.querySelector('.js-plotly-plot');
                 if (!plot || !window.Plotly) return;
-                Plotly.restyle(plot, {{opacity: [{opacity_value:.3f}]}}, [0]);
+                Plotly.restyle(plot, {{opacity: [{opacity_value:.3f}]}}, {json.dumps(mesh_indices)});
             }})();
             """
         )
@@ -959,18 +1111,28 @@ class GeometryPlanningWindow(QMainWindow):
         )
 
     def _apply_scene_visibility_state(self):
-        if not self._scene_meta or self._current_verts is None or self._current_faces is None:
+        if not self._scene_meta or self._current_mask_meshes is None:
             return
 
-        screw_mode_indices = self._scene_meta.get("screw_mode_indices", [])
         bbox_indices = self._scene_meta.get("bbox_indices", [])
-        if self._current_display_mode == "trajectories":
-            self._restyle_plot({"visible": self._scene_meta.get("screw_mode_traj_vis", [])}, screw_mode_indices)
-        else:
-            self._restyle_plot({"visible": self._scene_meta.get("screw_mode_screws_vis", [])}, screw_mode_indices)
-
         if bbox_indices:
             self._restyle_plot({"visible": [self._current_bbox_visible] * len(bbox_indices)}, bbox_indices)
+
+        if self._view_ready:
+            self.view.page().runJavaScript(
+                f"""
+                (function() {{
+                    window.__displayMode = {json.dumps(self._current_display_mode)};
+                    window.__showEntryMarkers = {json.dumps(not self._args.hide_entry_markers)};
+                    window.__showTipMarkers = {json.dumps(bool(self._args.show_tip_markers))};
+                    if (typeof window.applyMaskVisibilityState === 'function') {{
+                        window.applyMaskVisibilityState();
+                    }}
+                }})();
+                """
+            )
+
+        # The HTML overlay owns visibility toggles; no extra Qt chrome.
 
     def _apply_hover_coordinate_state(self):
         if not self._view_ready or not self._scene_meta:
@@ -994,7 +1156,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._view_ready = bool(ok)
         if ok:
             QTimer.singleShot(120, self._clear_loading_state)
-            if self._current_verts is not None and self._current_faces is not None:
+            if self._current_mask_meshes is not None:
                 opacity_value = self._pending_mesh_opacity
                 if opacity_value is None:
                     opacity_value = self.opacity_slider.value() / 100.0
@@ -1008,10 +1170,23 @@ class GeometryPlanningWindow(QMainWindow):
         show_trajectory_lines = self._current_display_mode == "trajectories"
         screw_mode = "none" if show_trajectory_lines else "cylinder"
 
+        mask_meshes = []
+        for mesh in self._current_mask_meshes or []:
+            label = str(mesh.get("label", "Mask"))
+            mask_meshes.append(
+                {
+                    **mesh,
+                    "visible": bool(self._mask_visibility.get(label, mesh.get("visible", True))),
+                    "opacity": self.opacity_slider.value() / 100.0,
+                }
+            )
+
         return build_visualization(
-            verts_world=self._current_verts,
-            faces=self._current_faces,
+            verts_world=None,
+            faces=None,
             results_list=self._current_results,
+            mask_meshes=mask_meshes,
+            camera=self._scene_camera,
             volume_path=self._current_seg_path,
             screw_mode=screw_mode,
             theme=self._args.theme,
@@ -1048,7 +1223,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._load_html(_blank_html("#0B1320"))
 
     def _render_scene(self):
-        if self._current_verts is None or self._current_faces is None:
+        if self._current_mask_meshes is None:
             self._render_blank_view()
             return
 
@@ -1079,7 +1254,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._last_directory = os.path.dirname(file_path)
         self._set_loading_state("Loading Mask", "Building the anatomical surface from the selected segmentation.")
         try:
-            verts_world, faces, mask_shape = _build_mask_mesh(file_path)
+            mask_meshes, mask_shape = _build_mask_meshes(file_path)
         except Exception as exc:
             self._clear_loading_state()
             QMessageBox.critical(self, "Mask Load Failed", str(exc))
@@ -1087,8 +1262,7 @@ class GeometryPlanningWindow(QMainWindow):
 
         self._current_seg_path = file_path
         self._current_mask_shape = mask_shape
-        self._current_verts = verts_world
-        self._current_faces = faces
+        self._current_mask_meshes = mask_meshes
         self._current_results = []
         self._plan_ready = False
         self._current_display_mode = "trajectories"
@@ -1098,6 +1272,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.hide_bbox_button.setChecked(True)
         self._current_bbox_visible = False
         self.run_button.setText("Run Planning")
+        self._mask_visibility = {mesh["label"]: True for mesh in mask_meshes}
         self._set_loaded_state(True)
         self._render_scene()
 
@@ -1143,7 +1318,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._current_results = results
         self._plan_ready = bool(results)
         self.run_button.setText("Export Plan Data" if self._plan_ready else "Run Planning")
-        self._render_scene()
+        self._capture_view_state(lambda: self._render_scene())
 
         console = self._show_planning_console(tab_index=1)
         console.clear_output()
@@ -1182,7 +1357,7 @@ class GeometryPlanningWindow(QMainWindow):
             self._planning_console.set_results(results)
             self._planning_console.show_table_tab()
             self._show_planning_console(tab_index=1)
-        self._render_scene()
+        self._capture_view_state(lambda: self._render_scene())
 
     def _on_planning_failed(self, message):
         QMessageBox.critical(self, "Planning Failed", message)
@@ -1190,7 +1365,7 @@ class GeometryPlanningWindow(QMainWindow):
     def _on_planning_finished(self):
         self._planning_worker = None
         self._set_busy_state(False)
-        self._set_loaded_state(self._current_verts is not None)
+        self._set_loaded_state(self._current_mask_meshes is not None)
 
     def _serialize_plan_data(self):
         return {
