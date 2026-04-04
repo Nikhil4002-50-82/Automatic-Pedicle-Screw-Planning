@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSlider,
+    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -86,11 +87,24 @@ class PlanningWorker(QThread):
 
 
 class PlanningConsole(QDialog):
+    closed = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("PlanningConsolePanel")
         self.setWindowTitle("Planning Console")
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.setModal(False)
-        self.resize(1040, 560)
+        self.setMinimumSize(940, 720)
+        self.resize(1040, 780)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setSizeGripEnabled(True)
 
         self._table_headers = [
             "VERTEBRA",
@@ -102,7 +116,19 @@ class PlanningConsole(QDialog):
             "ENTRY POINT",
         ]
 
+        self.setStyleSheet(
+            "background-color: rgba(10, 16, 26, 0.98);"
+            "border-left: 1px solid rgba(151, 164, 180, 0.22);"
+        )
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title_label = QLabel("Planning Console")
+        title_label.setStyleSheet("color: #F8FAFC; font-size: 14px; font-weight: 700;")
+        layout.addWidget(title_label)
+
         self.tabs = QTabWidget()
 
         log_tab = QWidget()
@@ -150,6 +176,42 @@ class PlanningConsole(QDialog):
         self.tabs.addTab(table_tab, "Table")
         layout.addWidget(self.tabs)
 
+    def show_panel(self, tab_index=0):
+        if self.isMinimized():
+            self.showNormal()
+        self.setVisible(True)
+        self.raise_()
+        self.activateWindow()
+        self._position_over_parent()
+        if tab_index == 1:
+            self.show_table_tab()
+        else:
+            self.show_log_tab()
+
+    def hide_panel(self):
+        self.setVisible(False)
+
+    def toggle_panel(self, tab_index=0):
+        if self.isVisible():
+            self.hide_panel()
+        else:
+            self.show_panel(tab_index=tab_index)
+
+    def closeEvent(self, event):  # pragma: no cover - UI lifecycle
+        self.hide()
+        self.closed.emit()
+        event.ignore()
+
+    def _position_over_parent(self):
+        parent = self.parentWidget()
+        if parent is None:
+            return
+
+        parent_top_left = parent.mapToGlobal(parent.rect().topLeft())
+        x = parent_top_left.x() + parent.width() - self.width() - 24
+        y = parent_top_left.y() + max(24, (parent.height() - self.height()) // 2)
+        self.move(x, y)
+
     def append_text(self, text):
         if not text:
             return
@@ -165,6 +227,12 @@ class PlanningConsole(QDialog):
     def clear_all(self):
         self.clear_output()
         self.clear_table()
+
+    def show_log_tab(self):
+        self.tabs.setCurrentIndex(0)
+
+    def show_table_tab(self):
+        self.tabs.setCurrentIndex(1)
 
     def set_results(self, results):
         self.clear_table()
@@ -453,7 +521,7 @@ class GeometryPlanningWindow(QMainWindow):
 
     def _build_ui(self):
         container = QWidget()
-        root_layout = QVBoxLayout(container)
+        root_layout = QHBoxLayout(container)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
         container.setStyleSheet("background-color: #0B1320;")
@@ -461,8 +529,13 @@ class GeometryPlanningWindow(QMainWindow):
         if QWebEngineView is None:
             raise RuntimeError("PyQt6.QtWebEngineWidgets is required to display the unified viewer.")
 
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
         self.view = QWebEngineView()
-        root_layout.addWidget(self.view, 1)
+        content_layout.addWidget(self.view, 1)
 
         controls_panel = QWidget()
         controls_panel.setStyleSheet(
@@ -487,6 +560,8 @@ class GeometryPlanningWindow(QMainWindow):
         self.opacity_slider.setValue(int(round(float(self._args.mesh_opacity) * 100)))
         self.opacity_slider.setFixedWidth(240)
         self.opacity_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.console_button = QPushButton("Log / Table")
+        self.console_button.setCheckable(True)
         self.export_button = QPushButton("Export Image")
 
         button_style = (
@@ -550,6 +625,7 @@ class GeometryPlanningWindow(QMainWindow):
             self.show_traj_button,
             self.show_bbox_button,
             self.hide_bbox_button,
+            self.console_button,
         ):
             button.setStyleSheet(button_style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -558,6 +634,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.load_button.setCheckable(False)
         self.load_results_button.setCheckable(False)
         self.run_button.setCheckable(False)
+        self.console_button.setCheckable(True)
         self.export_button.setStyleSheet(export_style)
         self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -616,6 +693,7 @@ class GeometryPlanningWindow(QMainWindow):
         controls_layout.addWidget(self.hide_bbox_button)
         controls_layout.addWidget(self.opacity_label)
         controls_layout.addWidget(self.opacity_slider)
+        controls_layout.addWidget(self.console_button)
         controls_layout.addStretch(1)
 
         root_layout.addWidget(controls_panel)
@@ -632,7 +710,18 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.clicked.connect(lambda: self._set_bbox_visibility(True))
         self.hide_bbox_button.clicked.connect(lambda: self._set_bbox_visibility(False))
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        self.console_button.clicked.connect(self._toggle_planning_console)
         self.export_button.clicked.connect(self._export_image)
+
+        content_layout.addWidget(controls_panel)
+        content_layout.addWidget(self.export_button)
+
+        root_layout.addWidget(content_widget, 1)
+
+        self._planning_console = PlanningConsole(self)
+        self._planning_console.closed.connect(self._hide_planning_console)
+        self._planning_console.hide_panel()
+        self.console_button.setChecked(False)
 
         self.setCentralWidget(container)
         self._loading_overlay = LoadingOverlay(container)
@@ -649,6 +738,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.setEnabled(loaded)
         self.hide_bbox_button.setEnabled(loaded)
         self.opacity_slider.setEnabled(loaded)
+        self.console_button.setEnabled(True)
 
     def _set_busy_state(self, busy):
         self.load_button.setEnabled(not busy)
@@ -659,6 +749,26 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.setEnabled((not busy) and self._current_verts is not None)
         self.hide_bbox_button.setEnabled((not busy) and self._current_verts is not None)
         self.opacity_slider.setEnabled((not busy) and self._current_verts is not None)
+        self.console_button.setEnabled(True)
+
+    def _show_planning_console(self, tab_index=0):
+        console = self._ensure_planning_console(tab_index=tab_index)
+        console.show_panel(tab_index=tab_index)
+        self.console_button.setChecked(True)
+        return console
+
+    def _hide_planning_console(self):
+        if self._planning_console is not None:
+            self._planning_console.hide_panel()
+        self.console_button.setChecked(False)
+
+    def _toggle_planning_console(self):
+        if self._planning_console is not None and self._planning_console.isVisible() and not self._planning_console.isMinimized():
+            self._hide_planning_console()
+            return
+
+        tab_index = 1 if self._plan_ready else 0
+        self._show_planning_console(tab_index=tab_index)
 
     def _set_max_diameter_mode(self):
         self._current_display_mode = "max_diameter"
@@ -698,6 +808,11 @@ class GeometryPlanningWindow(QMainWindow):
 
     def _clear_loading_state(self):
         self._loading_overlay.hide()
+
+    def _ensure_planning_console(self, tab_index=0):
+        if self._planning_console is None:
+            self._planning_console = PlanningConsole(self)
+        return self._planning_console
 
     def _apply_mesh_opacity(self, opacity_value):
         if self._current_verts is None or self._current_faces is None:
@@ -898,10 +1013,11 @@ class GeometryPlanningWindow(QMainWindow):
         self.run_button.setText("Export Plan Data" if self._plan_ready else "Run Planning")
         self._render_scene()
 
-        if self._planning_console is not None:
-            self._planning_console.clear_output()
-            self._planning_console.set_results(results)
-            self._planning_console.append_text(f"Loaded planning results from: {file_path}")
+        console = self._show_planning_console(tab_index=1)
+        console.clear_output()
+        console.set_results(results)
+        console.show_table_tab()
+        console.append_text(f"Loaded planning results from: {file_path}")
 
     def _run_planning(self):
         if not self._current_seg_path:
@@ -912,14 +1028,9 @@ class GeometryPlanningWindow(QMainWindow):
             self._export_planning_data()
             return
 
-        if self._planning_console is None:
-            self._planning_console = PlanningConsole(self)
-        console = self._planning_console
+        console = self._show_planning_console(tab_index=0)
         console.clear_all()
         console.append_text(f"Running planning on: {self._current_seg_path}")
-        console.show()
-        console.raise_()
-        console.activateWindow()
 
         self._set_busy_state(True)
         self.run_button.setText("Running...")
@@ -937,6 +1048,8 @@ class GeometryPlanningWindow(QMainWindow):
         self.run_button.setText("Export Plan Data")
         if self._planning_console is not None:
             self._planning_console.set_results(results)
+            self._planning_console.show_table_tab()
+            self._show_planning_console(tab_index=1)
         self._render_scene()
 
     def _on_planning_failed(self, message):
