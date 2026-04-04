@@ -111,6 +111,58 @@ class PlanningConsole(QDialog):
         self.output.clear()
 
 
+class LoadingOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet(
+            "background: qradialgradient(cx:0.5, cy:0.5, radius:0.92, fx:0.5, fy:0.5, "
+            "stop:0 rgba(0, 0, 0, 0.36), stop:0.58 rgba(0, 0, 0, 0.76), stop:1 rgba(0, 0, 0, 0.94));"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addStretch(1)
+
+        panel = QWidget()
+        panel.setFixedWidth(340)
+        panel.setStyleSheet(
+            "QWidget {"
+            "  background-color: rgba(7, 12, 19, 0.90);"
+            "  border: 1px solid rgba(148, 163, 184, 0.28);"
+            "  border-radius: 18px;"
+            "}"
+        )
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(28, 24, 28, 24)
+        panel_layout.setSpacing(8)
+
+        self.title_label = QLabel("Loading")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setStyleSheet(
+            "color: #F8FAFC; font-size: 20px; font-weight: 700; letter-spacing: 0.4px;"
+        )
+        self.detail_label = QLabel("Please wait while the viewer updates.")
+        self.detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet("color: #CBD5E1; font-size: 12px;")
+
+        panel_layout.addWidget(self.title_label)
+        panel_layout.addWidget(self.detail_label)
+
+        center_row = QHBoxLayout()
+        center_row.addStretch(1)
+        center_row.addWidget(panel)
+        center_row.addStretch(1)
+        layout.addLayout(center_row)
+        layout.addStretch(1)
+
+    def set_message(self, title, detail):
+        self.title_label.setText(title)
+        self.detail_label.setText(detail)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Open a blank unified viewer, load a segmentation mask, and run planning in place."
@@ -304,6 +356,8 @@ class GeometryPlanningWindow(QMainWindow):
         self._planning_console = None
         self._plan_ready = False
         self._current_mask_shape = None
+        self._view_ready = False
+        self._pending_mesh_opacity = None
         self._last_directory = os.path.expanduser("~/Downloads")
 
         self.setWindowTitle("Pedicle Screw Planner Visualization")
@@ -494,6 +548,10 @@ class GeometryPlanningWindow(QMainWindow):
         self.export_button.clicked.connect(self._export_image)
 
         self.setCentralWidget(container)
+        self._loading_overlay = LoadingOverlay(container)
+        self._loading_overlay.hide()
+        self._loading_overlay.raise_()
+        self.view.loadFinished.connect(self._on_view_load_finished)
         self.resize(1320, 940)
 
     def _set_loaded_state(self, loaded):
@@ -536,12 +594,50 @@ class GeometryPlanningWindow(QMainWindow):
 
     def _on_opacity_changed(self, value):
         self.opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}")
-        if self._current_verts is None:
-            return
-        self._render_scene_delayed()
+        self._apply_mesh_opacity(value / 100.0)
 
     def _render_scene_delayed(self):
         QTimer.singleShot(0, self._render_scene)
+
+    def _set_loading_state(self, title, detail):
+        self._loading_overlay.set_message(title, detail)
+        self._loading_overlay.setGeometry(self.centralWidget().rect())
+        self._loading_overlay.show()
+        self._loading_overlay.raise_()
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+    def _clear_loading_state(self):
+        self._loading_overlay.hide()
+
+    def _apply_mesh_opacity(self, opacity_value):
+        if self._current_verts is None or self._current_faces is None:
+            return
+
+        if not self._view_ready:
+            self._pending_mesh_opacity = opacity_value
+            return
+
+        self._pending_mesh_opacity = None
+        self.view.page().runJavaScript(
+            f"""
+            (function() {{
+                const plot = document.querySelector('.js-plotly-plot');
+                if (!plot || !window.Plotly) return;
+                Plotly.restyle(plot, {{opacity: [{opacity_value:.3f}]}}, [0]);
+            }})();
+            """
+        )
+
+    def _on_view_load_finished(self, ok):
+        self._view_ready = bool(ok)
+        self._clear_loading_state()
+        if ok and self._current_verts is not None and self._current_faces is not None:
+            opacity_value = self._pending_mesh_opacity
+            if opacity_value is None:
+                opacity_value = self.opacity_slider.value() / 100.0
+            self._apply_mesh_opacity(opacity_value)
 
     def _build_scene_figure(self):
         show_trajectory_lines = self._current_display_mode == "trajectories"
@@ -575,6 +671,7 @@ class GeometryPlanningWindow(QMainWindow):
             except OSError:
                 pass
 
+        self._view_ready = False
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False, encoding="utf-8", mode="w") as tmpfile:
             tmpfile.write(html_document)
             self._current_html_path = tmpfile.name
@@ -589,9 +686,15 @@ class GeometryPlanningWindow(QMainWindow):
             self._render_blank_view()
             return
 
+        self._view_ready = False
         figure = self._build_scene_figure()
         html_document = _figure_to_html(figure)
         self._load_html(html_document)
+
+    def resizeEvent(self, event):  # pragma: no cover - UI lifecycle
+        super().resizeEvent(event)
+        if hasattr(self, "_loading_overlay"):
+            self._loading_overlay.setGeometry(self.centralWidget().rect())
 
     def _load_mask(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -604,9 +707,11 @@ class GeometryPlanningWindow(QMainWindow):
             return
 
         self._last_directory = os.path.dirname(file_path)
+        self._set_loading_state("Loading Mask", "Building the anatomical surface from the selected segmentation.")
         try:
             verts_world, faces, mask_shape = _build_mask_mesh(file_path)
         except Exception as exc:
+            self._clear_loading_state()
             QMessageBox.critical(self, "Mask Load Failed", str(exc))
             return
 
@@ -638,15 +743,18 @@ class GeometryPlanningWindow(QMainWindow):
         if not file_path:
             return
 
+        self._set_loading_state("Loading Results", "Restoring planning data onto the currently loaded mask.")
         try:
             with open(file_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except Exception as exc:
+            self._clear_loading_state()
             QMessageBox.critical(self, "Load Results Failed", f"Could not read results file.\n\n{type(exc).__name__}: {exc}")
             return
 
         source_file = payload.get("source_file")
         if source_file and os.path.abspath(source_file) != os.path.abspath(self._current_seg_path):
+            self._clear_loading_state()
             QMessageBox.warning(
                 self,
                 "Mask Mismatch",
@@ -656,6 +764,7 @@ class GeometryPlanningWindow(QMainWindow):
 
         results = payload.get("results", [])
         if not isinstance(results, list):
+            self._clear_loading_state()
             QMessageBox.critical(self, "Load Results Failed", "The results file is not in the expected format.")
             return
 
