@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 import nibabel as nib
 import numpy as np
@@ -356,6 +357,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._planning_console = None
         self._plan_ready = False
         self._current_mask_shape = None
+        self._scene_meta = {}
         self._view_ready = False
         self._pending_mesh_opacity = None
         self._last_directory = os.path.expanduser("~/Downloads")
@@ -575,13 +577,15 @@ class GeometryPlanningWindow(QMainWindow):
 
     def _set_max_diameter_mode(self):
         self._current_display_mode = "max_diameter"
-        if self._current_verts is not None:
-            self._render_scene()
+        self.show_screws_button.setChecked(True)
+        self.show_traj_button.setChecked(False)
+        self._apply_scene_visibility_state()
 
     def _set_trajectory_mode(self):
         self._current_display_mode = "trajectories"
-        if self._current_verts is not None:
-            self._render_scene()
+        self.show_screws_button.setChecked(False)
+        self.show_traj_button.setChecked(True)
+        self._apply_scene_visibility_state()
 
     def _set_bbox_visibility(self, visible):
         self._current_bbox_visible = visible
@@ -589,8 +593,7 @@ class GeometryPlanningWindow(QMainWindow):
             self.show_bbox_button.setChecked(True)
         else:
             self.hide_bbox_button.setChecked(True)
-        if self._current_verts is not None:
-            self._render_scene()
+        self._apply_scene_visibility_state()
 
     def _on_opacity_changed(self, value):
         self.opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}")
@@ -630,14 +633,45 @@ class GeometryPlanningWindow(QMainWindow):
             """
         )
 
+    def _restyle_plot(self, payload, indices):
+        if not self._view_ready:
+            return
+        self.view.page().runJavaScript(
+            f"""
+            (function() {{
+                const plot = document.querySelector('.js-plotly-plot');
+                if (!plot || !window.Plotly) return;
+                Plotly.restyle(plot, {json.dumps(payload)}, {json.dumps(indices)});
+            }})();
+            """
+        )
+
+    def _apply_scene_visibility_state(self):
+        if not self._scene_meta or self._current_verts is None or self._current_faces is None:
+            return
+
+        screw_mode_indices = self._scene_meta.get("screw_mode_indices", [])
+        bbox_indices = self._scene_meta.get("bbox_indices", [])
+        if self._current_display_mode == "trajectories":
+            self._restyle_plot({"visible": self._scene_meta.get("screw_mode_traj_vis", [])}, screw_mode_indices)
+        else:
+            self._restyle_plot({"visible": self._scene_meta.get("screw_mode_screws_vis", [])}, screw_mode_indices)
+
+        if bbox_indices:
+            self._restyle_plot({"visible": [self._current_bbox_visible] * len(bbox_indices)}, bbox_indices)
+
     def _on_view_load_finished(self, ok):
         self._view_ready = bool(ok)
-        self._clear_loading_state()
-        if ok and self._current_verts is not None and self._current_faces is not None:
-            opacity_value = self._pending_mesh_opacity
-            if opacity_value is None:
-                opacity_value = self.opacity_slider.value() / 100.0
-            self._apply_mesh_opacity(opacity_value)
+        if ok:
+            QTimer.singleShot(120, self._clear_loading_state)
+            if self._current_verts is not None and self._current_faces is not None:
+                opacity_value = self._pending_mesh_opacity
+                if opacity_value is None:
+                    opacity_value = self.opacity_slider.value() / 100.0
+                self._apply_mesh_opacity(opacity_value)
+                self._apply_scene_visibility_state()
+        else:
+            self._clear_loading_state()
 
     def _build_scene_figure(self):
         show_trajectory_lines = self._current_display_mode == "trajectories"
@@ -688,6 +722,10 @@ class GeometryPlanningWindow(QMainWindow):
 
         self._view_ready = False
         figure = self._build_scene_figure()
+        scene_meta = getattr(figure.layout, "meta", None) or {}
+        if hasattr(scene_meta, "to_plotly_json"):
+            scene_meta = scene_meta.to_plotly_json()
+        self._scene_meta = scene_meta
         html_document = _figure_to_html(figure)
         self._load_html(html_document)
 
@@ -848,15 +886,28 @@ class GeometryPlanningWindow(QMainWindow):
             ],
         }
 
+    def _export_stem(self):
+        if not self._current_seg_path:
+            return "planning_data"
+
+        stem = Path(self._current_seg_path).name
+        if stem.endswith(".nii.gz"):
+            stem = stem[:-7]
+        else:
+            stem = Path(stem).stem
+        return f"{stem}_planning_data"
+
     def _export_planning_data(self):
         if not self._plan_ready or not self._current_results:
             QMessageBox.information(self, "Nothing to Export", "Run planning first to generate exportable data.")
             return
 
+        default_name = f"{self._export_stem()}.json"
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Planning Data",
-            "planning_data.json",
+            default_name,
             "JSON Files (*.json);;All Files (*)",
         )
         if not file_path:
