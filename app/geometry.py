@@ -121,7 +121,7 @@ def pedicleCenters(mask, dist, centroid, axes, affine):
 
     return lCenter, rCenter
 
-def findEntry(center, axes, maskFloat, affine, side):
+def findEntry(center, axes, maskFloat, affine, side, invAff=None):
 
     siAxis, lrAxis, apAxis = axes
 
@@ -130,7 +130,8 @@ def findEntry(center, axes, maskFloat, affine, side):
 
     direction = -apAxis
 
-    invAff = np.linalg.inv(affine)
+    if invAff is None:
+        invAff = np.linalg.inv(affine)
 
     p = startP.copy()
 
@@ -148,59 +149,72 @@ def findEntry(center, axes, maskFloat, affine, side):
     return p + apAxis * 1.5
 
 
-def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, maxAllowedLen, v_name):
+def evaluate(entry, direction, side, maskFloat, dist, affine, axes, centroid, maxAllowedLen, v_name, invAff=None):
 
     d = direction / np.linalg.norm(direction)
 
     siAxis, lrAxis, apAxis = axes
-    invAff = np.linalg.inv(affine)
+    if invAff is None:
+        invAff = np.linalg.inv(affine)
 
     if np.dot(d, siAxis) > 0:
         return None
 
-    t = 0
+    ts = np.arange(0.0, maxAllowedLen, stepMM, dtype=np.float32)
+    if ts.size == 0:
+        return None
+
+    points = entry + np.outer(ts, d)
+    vox = nib.affines.apply_affine(invAff, points)
+    bounds = np.array(maskFloat.shape, dtype=np.float32) - 1.0
+    in_bounds = np.all((vox >= 0) & (vox < bounds), axis=1)
+
+    inside = np.zeros(ts.shape[0], dtype=np.float32)
+    dt_vals = np.zeros(ts.shape[0], dtype=np.float32)
+    valid_idx = np.where(in_bounds)[0]
+    if valid_idx.size:
+        valid_vox = vox[valid_idx]
+        inside[valid_idx] = map_coordinates(
+            maskFloat,
+            [valid_vox[:, 0], valid_vox[:, 1], valid_vox[:, 2]],
+            order=1,
+        )
+        dt_vals[valid_idx] = map_coordinates(
+            dist,
+            [valid_vox[:, 0], valid_vox[:, 1], valid_vox[:, 2]],
+            order=1,
+        )
+
+    violation_mask = (~in_bounds) | (inside < 0.5)
+    if np.any(violation_mask):
+        t_exit_idx = int(np.flatnonzero(violation_mask)[0])
+        t_exit = float(ts[t_exit_idx])
+        sample_slice = slice(0, t_exit_idx)
+    else:
+        t_exit = float(maxAllowedLen)
+        sample_slice = slice(None)
+
     minDT = 999
     midlineViolation = 0
 
     lr_comp = np.dot(d, lrAxis)
     conv = lr_comp if side == "Left" else -lr_comp
 
-    t_exit = None  # --- NEW ---
+    sample_ts = ts[sample_slice]
+    sample_points = points[sample_slice]
+    sample_dt_vals = dt_vals[sample_slice]
 
-    while t < maxAllowedLen:
+    if sample_ts.size:
+        rel_pts = sample_points - centroid
+        lr_pos = rel_pts @ lrAxis
+        if side == "Left":
+            midlineViolation = int(np.count_nonzero(lr_pos > 1.5))
+        else:
+            midlineViolation = int(np.count_nonzero(lr_pos < -1.5))
 
-        p = entry + d*t
-        vox = nib.affines.apply_affine(invAff,p)
-
-        if any(v<0 or v>=s-1 for v,s in zip(vox,maskFloat.shape)):
-            t_exit = t
-            break
-
-        inside = map_coordinates(
-            maskFloat,
-            [[vox[0]],[vox[1]],[vox[2]]],
-            order=1
-        )[0]
-
-        if inside < 0.5:
-            t_exit = t
-            break
-
-        relP = p - centroid
-        lrPos = np.dot(relP, lrAxis)
-
-        if (side=="Left" and lrPos>1.5) or (side=="Right" and lrPos<-1.5):
-            midlineViolation += 1
-
-        dtVal = map_coordinates(dist,[[vox[0]],[vox[1]],[vox[2]]],order=1)[0]
-
-        if 5.0 < t < 30.0:
-            minDT = min(minDT,dtVal)
-
-        t += stepMM
-
-    if t_exit is None:
-        t_exit = t
+        dt_window = (sample_ts > 5.0) & (sample_ts < 30.0)
+        if np.any(dt_window):
+            minDT = float(np.min(sample_dt_vals[dt_window]))
 
     # --- Apply 2 mm safety margin ---
     safetyMargin = 3.0
@@ -238,7 +252,9 @@ def optimize(center, axes, side, maskFloat, dist, affine, centroid, totalDepth, 
     if center is None:
         return None
 
-    entry = findEntry(center, axes, maskFloat, affine, side)
+    invAff = np.linalg.inv(affine)
+
+    entry = findEntry(center, axes, maskFloat, affine, side, invAff=invAff)
 
     geomLimit = totalDepth * maxDepthRatio
     clinicalLimit = LENGTH_LIMITS.get(v_name, 50)
@@ -267,7 +283,8 @@ def optimize(center, axes, side, maskFloat, dist, affine, centroid, totalDepth, 
                 axes,
                 centroid,
                 maxAllowedLen,
-                v_name
+                v_name,
+                invAff=invAff,
             )
 
             if res and (best is None or res[0] > best[0]):

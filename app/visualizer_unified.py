@@ -1,12 +1,27 @@
-import datetime
 import json
 import os
 import sys
 import tempfile
-from pathlib import Path
 
-# Lazy-load heavy libraries to reduce startup time
-import numpy as np
+
+class _LazyModule:
+    def __init__(self, module_name):
+        self._module_name = module_name
+        self._module = None
+
+    def _load(self):
+        if self._module is None:
+            import importlib
+
+            self._module = importlib.import_module(self._module_name)
+        return self._module
+
+    def __getattr__(self, item):
+        return getattr(self._load(), item)
+
+
+# Lazy-load heavy libraries to reduce startup time.
+np = _LazyModule("numpy")
 
 # Plotly will be imported on first use in build_visualization()
 _plotly_go = None
@@ -34,6 +49,7 @@ def _ensure_plotlyjs_bundle():
     Saves ~2-5 seconds on first visualization by avoiding re-download.
     """
     global _PLOTLY_JS_BUNDLE_PATH
+    from pathlib import Path
 
     if _PLOTLY_JS_BUNDLE_PATH and os.path.exists(_PLOTLY_JS_BUNDLE_PATH):
         return _PLOTLY_JS_BUNDLE_PATH
@@ -201,9 +217,10 @@ def _build_closed_cylinder_mesh(entry, tip, diameter, resolution=24):
 
 
 def _volume_metadata(volume_path):
+    import datetime
+
     if not volume_path:
         return "Unknown Volume", "Unknown"
-
     volume_name = os.path.basename(volume_path)
     try:
         created = os.path.getctime(volume_path)
@@ -911,6 +928,7 @@ def build_visualization(
 
 def _build_qt_window(fig, window_title):
     # Lazy load PyQt6 to avoid import overhead until visualization is needed
+    from pathlib import Path
     from PyQt6.QtCore import Qt, QUrl
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWebEngineWidgets import QWebEngineView

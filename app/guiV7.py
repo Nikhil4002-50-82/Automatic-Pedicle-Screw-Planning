@@ -23,7 +23,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QPixmap, QColor
 
 # Importing your existing modules (Unchanged)
-from geometryV4 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from geometry import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
 from visualizerV5 import visualize_surgical_plan
 
 import nibabel as nib

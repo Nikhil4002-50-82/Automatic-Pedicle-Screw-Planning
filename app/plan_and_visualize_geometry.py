@@ -13,7 +13,8 @@ def plan_and_visualize_geometry():
     print(f"Running geometry_2.py (L5-optimized) planning and visualization on: {segmented_file}")
     vertsWorld, faces = build_mesh_from_single_vertebra(segmented_file)
     results = run_planner(segmented_file)
-    visualize_surgical_plan(vertsWorld, faces, results, volume_path=segmented_file)
+    fig, show_figure = visualize_surgical_plan(vertsWorld, faces, results, volume_path=segmented_file)
+    show_figure(fig)
     print("geometry_2.py (L5-optimized) planning and visualization completed.")
 
 def build_mesh_from_single_vertebra(segmented_file):
