@@ -257,7 +257,6 @@ def _format_result_hover(result, entry, tip, depth):
         f"Tip: [{tip[0]:.2f}, {tip[1]:.2f}, {tip[2]:.2f}]",
         f"Depth: {depth:.2f} mm",
     ]
-
     if result.get("diameter") is not None:
         hover_lines.append(f"Diameter: {float(result['diameter']):.2f} mm")
     if result.get("length") is not None:
@@ -268,6 +267,36 @@ def _format_result_hover(result, entry, tip, depth):
         hover_lines.append(f"Sagittal Angle: {float(result['sagittal_angle']):.2f} deg")
 
     return "<br>".join(hover_lines) + "<extra></extra>"
+
+
+def _result_legend_label(result):
+    vertebra = str(result.get("vertebra", "")).strip()
+    side = str(result.get("side", "")).strip().title()
+    if vertebra and side:
+        return f"{vertebra}-{side}"
+    if vertebra:
+        return vertebra
+    if side:
+        return side
+    return "Trajectory"
+
+
+def _mesh_hover_template(volume_name, show_coordinates):
+    if not show_coordinates:
+        return "<extra></extra>"
+    return "X: %{x:.2f} | Y: %{y:.2f} | Z: %{z:.2f}<extra></extra>"
+
+
+def _trajectory_hover_template(label, result, entry, tip, depth, show_coordinates):
+    if show_coordinates:
+        return "X: %{x:.2f} | Y: %{y:.2f} | Z: %{z:.2f}<extra></extra>"
+    return "<extra></extra>"
+
+
+def _marker_hover_template(label, result, point, show_coordinates):
+    if show_coordinates:
+        return "X: %{x:.2f} | Y: %{y:.2f} | Z: %{z:.2f}<extra></extra>"
+    return "<extra></extra>"
 
 
 def _default_visual_diameter(result, fallback_diameter=None):
@@ -421,27 +450,29 @@ def _style_config(visual_preset="cinematic", theme="dark"):
     return config
 
 
-def _add_mesh(fig, verts_world, faces, volume_name, timestamp, mesh_opacity, style):
+def _add_mesh(fig, verts_world, faces, volume_name, timestamp, mesh_opacity, style, hovertemplate=None):
     go, _ = _ensure_plotly_imports()
     verts_world = np.asarray(verts_world, dtype=np.float32)
     faces = np.asarray(faces, dtype=np.int32)
-    fig.add_trace(
-        go.Mesh3d(
-            x=verts_world[:, 0],
-            y=verts_world[:, 1],
-            z=verts_world[:, 2],
-            i=faces[:, 0],
-            j=faces[:, 1],
-            k=faces[:, 2],
-            opacity=mesh_opacity,
-            color=style["mesh_color"],
-            name=volume_name,
-            hoverinfo="skip",
-            lighting=style["mesh_lighting"],
-            lightposition=style["mesh_lightposition"],
-            showscale=False,
-        )
+    mesh_kwargs = dict(
+        x=verts_world[:, 0],
+        y=verts_world[:, 1],
+        z=verts_world[:, 2],
+        i=faces[:, 0],
+        j=faces[:, 1],
+        k=faces[:, 2],
+        opacity=mesh_opacity,
+        color=style["mesh_color"],
+        name=volume_name,
+        lighting=style["mesh_lighting"],
+        lightposition=style["mesh_lightposition"],
+        showscale=False,
     )
+    if hovertemplate is None:
+        mesh_kwargs["hoverinfo"] = "skip"
+    else:
+        mesh_kwargs["hovertemplate"] = hovertemplate
+    fig.add_trace(go.Mesh3d(**mesh_kwargs))
 
 
 def _add_bounding_box(fig, verts_world, color, return_trace=False):
@@ -528,6 +559,7 @@ def _build_result_traces(
     neon_trajectories,
     gold_screws,
     screw_resolution,
+    show_hover_coordinates,
 ):
     go, _ = _ensure_plotly_imports()
     entry = np.asarray(result["entry"], dtype=float)
@@ -535,15 +567,28 @@ def _build_result_traces(
     direction = tip - entry
     depth = np.linalg.norm(direction)
     side_style = _side_style(result.get("side", ""), style)
-    hover_text = _format_result_hover(result, entry, tip, depth)
+    legend_label = _result_legend_label(result)
+    legend_group = f"{legend_label}::{side_style['legendgroup']}"
+    screw_hover_on = _marker_hover_template(f"{legend_label} Screw", result, entry, True)
+    screw_hover_off = _marker_hover_template(f"{legend_label} Screw", result, entry, False)
+    trajectory_hover_on = _trajectory_hover_template(legend_label, result, entry, tip, depth, True)
+    trajectory_hover_off = _trajectory_hover_template(legend_label, result, entry, tip, depth, False)
+    entry_hover_on = _marker_hover_template(f"{legend_label} Entry", result, entry, True)
+    entry_hover_off = _marker_hover_template(f"{legend_label} Entry", result, entry, False)
+    tip_hover_on = _marker_hover_template(f"{legend_label} Tip", result, tip, True)
+    tip_hover_off = _marker_hover_template(f"{legend_label} Tip", result, tip, False)
 
     screw_traces = []
     safety_plane_traces = []
+    screw_hover_on_templates = []
+    screw_hover_off_templates = []
 
     diameter = _default_visual_diameter(result, fallback_diameter=fallback_diameter)
     if diameter > 0:
         screw_mesh = _build_closed_cylinder_mesh(entry, tip, diameter, resolution=screw_resolution)
         if screw_mesh is not None and show_screw_meshes:
+            screw_hover_on_templates.append(screw_hover_on)
+            screw_hover_off_templates.append(screw_hover_off)
             screw_traces.append(
                 go.Mesh3d(
                     x=screw_mesh["x"],
@@ -554,9 +599,9 @@ def _build_result_traces(
                     k=screw_mesh["k"],
                     opacity=style["surface_opacity"],
                     color=side_style["surface_highlight"] if gold_screws else side_style["surface"],
-                    hovertemplate=hover_text,
-                    name=f"{result.get('side', '').strip()} Screw",
-                    legendgroup=side_style["legendgroup"],
+                    hovertemplate=screw_hover_on if show_hover_coordinates else screw_hover_off,
+                    name=f"{legend_label} Screw",
+                    legendgroup=legend_group,
                     lighting=style["surface_lighting"],
                     lightposition=style["surface_lightposition"],
                     flatshading=True,
@@ -580,27 +625,31 @@ def _build_result_traces(
                         colorscale=[[0, "#ff2a6d"], [1, "#ff2a6d"]],
                         hovertemplate="80% Safety Limit<extra></extra>",
                         name="80% Safety Limit",
-                        legendgroup=side_style["legendgroup"],
+                        legendgroup=legend_group,
                         showlegend=False,
                     )
                 )
 
     return {
         "screw_traces": screw_traces,
+        "screw_hover_on_templates": screw_hover_on_templates,
+        "screw_hover_off_templates": screw_hover_off_templates,
         "trajectory_traces": [
             go.Scatter3d(
                 x=[entry[0], tip[0]],
                 y=[entry[1], tip[1]],
                 z=[entry[2], tip[2]],
                 mode="lines",
-                line=dict(color="#00f0ff", width=6),
-                name=f"{result.get('side', '').strip()} Trajectory",
-                legendgroup=side_style["legendgroup"],
-                hovertemplate=hover_text,
+                line=dict(color=side_style["line"], width=6),
+                name=f"{legend_label} Trajectory",
+                legendgroup=legend_group,
+                hovertemplate=trajectory_hover_on if show_hover_coordinates else trajectory_hover_off,
                 showlegend=True,
                 visible=initial_trajectory_visibility,
             )
         ],
+        "trajectory_hover_on_templates": [trajectory_hover_on],
+        "trajectory_hover_off_templates": [trajectory_hover_off],
         "entry_marker_traces": [
             go.Scatter3d(
                 x=[entry[0]],
@@ -616,13 +665,15 @@ def _build_result_traces(
                         width=1.2 if neon_trajectories else 0,
                     ),
                 ),
-                name=f"{result.get('side', '').strip()} Entry",
-                legendgroup=side_style["legendgroup"],
-                hovertemplate=hover_text,
-                showlegend=True,
+                name=f"{legend_label} Entry",
+                legendgroup=legend_group,
+                hovertemplate=entry_hover_on if show_hover_coordinates else entry_hover_off,
+                showlegend=False,
                 visible=show_entry_markers,
             )
         ],
+        "entry_hover_on_templates": [entry_hover_on],
+        "entry_hover_off_templates": [entry_hover_off],
         "tip_marker_traces": [
             go.Scatter3d(
                 x=[tip[0]],
@@ -635,13 +686,15 @@ def _build_result_traces(
                     symbol="diamond",
                     line=dict(color="#FFFFFF", width=1),
                 ),
-                name=f"{result.get('side', '').strip()} Tip",
-                legendgroup=side_style["legendgroup"],
-                hovertemplate=hover_text,
+                name=f"{legend_label} Tip",
+                legendgroup=legend_group,
+                hovertemplate=tip_hover_on if show_hover_coordinates else tip_hover_off,
                 showlegend=False,
                 visible=show_tip_markers,
             )
         ],
+        "tip_hover_on_templates": [tip_hover_on],
+        "tip_hover_off_templates": [tip_hover_off],
         "safety_plane_traces": safety_plane_traces,
     }
 
@@ -660,6 +713,7 @@ def build_visualization(
     show_trajectory_lines=True,
     show_entry_markers=True,
     show_tip_markers=False,
+    show_hover_coordinates=False,
     neon_trajectories=True,
     gold_screws=True,
     threaded_screws=True,
@@ -696,7 +750,18 @@ def build_visualization(
 
     fig = go.Figure()
     volume_name, timestamp = _volume_metadata(volume_path)
-    _add_mesh(fig, raw_verts_world, raw_faces, volume_name, timestamp, mesh_opacity, style)
+    mesh_hover_on = _mesh_hover_template(volume_name, True)
+    mesh_hover_off = _mesh_hover_template(volume_name, False)
+    _add_mesh(
+        fig,
+        raw_verts_world,
+        raw_faces,
+        volume_name,
+        timestamp,
+        mesh_opacity,
+        style,
+        hovertemplate=mesh_hover_on if show_hover_coordinates else mesh_hover_off,
+    )
     bounding_box_traces = _add_bounding_box(fig, raw_verts_world, style["bounding_box"], return_trace=True) or []
     for trace in bounding_box_traces:
         trace.visible = show_bounding_box
@@ -707,6 +772,31 @@ def build_visualization(
     entry_marker_traces = []
     tip_marker_traces = []
     safety_plane_traces = []
+    screw_hover_on_templates = []
+    screw_hover_off_templates = []
+    trajectory_hover_on_templates = []
+    trajectory_hover_off_templates = []
+    entry_hover_on_templates = []
+    entry_hover_off_templates = []
+    tip_hover_on_templates = []
+    tip_hover_off_templates = []
+    legend_hover_on_texts = []
+    legend_hover_off_texts = []
+
+    for result in results_list:
+        legend_label = _result_legend_label(result)
+        entry = np.asarray(result["entry"], dtype=float)
+        tip = np.asarray(result["tip"], dtype=float)
+        legend_hover_on_texts.append(
+            "<br>".join(
+                [
+                    f"<b>{legend_label}</b>",
+                    f"Entry: X: {entry[0]:.2f} | Y: {entry[1]:.2f} | Z: {entry[2]:.2f}",
+                    f"Tip: X: {tip[0]:.2f} | Y: {tip[1]:.2f} | Z: {tip[2]:.2f}",
+                ]
+            )
+        )
+        legend_hover_off_texts.append("")
 
     result_trace_kwargs = [
         dict(
@@ -721,6 +811,7 @@ def build_visualization(
             neon_trajectories=neon_trajectories,
             gold_screws=gold_screws,
             screw_resolution=screw_resolution,
+            show_hover_coordinates=show_hover_coordinates,
         )
         for result in results_list
     ]
@@ -729,9 +820,17 @@ def build_visualization(
 
     for trace_group in result_traces:
         screw_traces.extend(trace_group["screw_traces"])
+        screw_hover_on_templates.extend(trace_group["screw_hover_on_templates"])
+        screw_hover_off_templates.extend(trace_group["screw_hover_off_templates"])
         trajectory_traces.extend(trace_group["trajectory_traces"])
+        trajectory_hover_on_templates.extend(trace_group["trajectory_hover_on_templates"])
+        trajectory_hover_off_templates.extend(trace_group["trajectory_hover_off_templates"])
         entry_marker_traces.extend(trace_group["entry_marker_traces"])
+        entry_hover_on_templates.extend(trace_group["entry_hover_on_templates"])
+        entry_hover_off_templates.extend(trace_group["entry_hover_off_templates"])
         tip_marker_traces.extend(trace_group["tip_marker_traces"])
+        tip_hover_on_templates.extend(trace_group["tip_hover_on_templates"])
+        tip_hover_off_templates.extend(trace_group["tip_hover_off_templates"])
         safety_plane_traces.extend(trace_group["safety_plane_traces"])
 
     # Add traces to figure
@@ -752,6 +851,10 @@ def build_visualization(
     screw_indices = list(range(trace_cursor, trace_cursor + n_screws))
     trace_cursor += n_screws
     trajectory_indices = list(range(trace_cursor, trace_cursor + n_traj))
+    trace_cursor += n_traj
+    entry_indices = list(range(trace_cursor, trace_cursor + n_entry))
+    trace_cursor += n_entry
+    tip_indices = list(range(trace_cursor, trace_cursor + n_tip))
     screw_mode_indices = screw_indices + trajectory_indices
     screw_mode_screws_vis = [True] * n_screws + [False] * n_traj
     screw_mode_traj_vis = [False] * n_screws + [True] * n_traj
@@ -892,11 +995,12 @@ def build_visualization(
         legend=dict(
             bgcolor="rgba(0,0,0,0)",
             font=dict(color=style["title_font_color"]),
-            orientation="h",
-            yanchor="bottom",
-            y=0.02,
+            orientation="v",
+            yanchor="top",
+            y=0.98,
             xanchor="left",
             x=0.02,
+            traceorder="normal",
         ),
         meta=dict(
             mesh_trace_index=0,
@@ -907,6 +1011,12 @@ def build_visualization(
             mesh_opacity=mesh_opacity,
             initial_screw_mode="screws" if show_screw_meshes else "trajectories",
             initial_bbox_visible=show_bounding_box,
+            show_hover_coordinates=show_hover_coordinates,
+            hover_toggle_indices=[0] + screw_indices + trajectory_indices + entry_indices + tip_indices,
+            hover_templates_on=[mesh_hover_on] + screw_hover_on_templates + trajectory_hover_on_templates + entry_hover_on_templates + tip_hover_on_templates,
+            hover_templates_off=[mesh_hover_off] + screw_hover_off_templates + trajectory_hover_off_templates + entry_hover_off_templates + tip_hover_off_templates,
+            legend_hover_on_texts=legend_hover_on_texts,
+            legend_hover_off_texts=legend_hover_off_texts,
         ),
         transition=dict(duration=0),
         uirevision="unified-visualizer",
@@ -949,6 +1059,8 @@ def _build_qt_window(fig, window_title):
     control_meta = getattr(fig.layout, "meta", None) or {}
     if hasattr(control_meta, "to_plotly_json"):
         control_meta = control_meta.to_plotly_json()
+    legend_hover_texts_on = json.dumps(control_meta.get("legend_hover_on_texts", []))
+    legend_hover_texts_off = json.dumps(control_meta.get("legend_hover_off_texts", []))
 
     qt_fig = _figure_without_embedded_controls(fig)
     plotly_bundle_uri = Path(_ensure_plotlyjs_bundle()).as_uri()
@@ -981,6 +1093,22 @@ def _build_qt_window(fig, window_title):
     .legendtoggle {{
       cursor: pointer !important;
     }}
+        .legend-hover-tooltip {{
+            position: fixed;
+            display: none;
+            z-index: 9999;
+            pointer-events: none;
+            max-width: 340px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(8, 14, 24, 0.96);
+            color: #F7FAFC;
+            border: 1px solid rgba(123, 229, 255, 0.28);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+            font-size: 12px;
+            line-height: 1.35;
+            white-space: pre-line;
+        }}
     .modebar {{
       background: rgba(8, 14, 24, 0.44) !important;
       border: 1px solid rgba(148, 163, 184, 0.14);
@@ -1004,6 +1132,69 @@ def _build_qt_window(fig, window_title):
 <body>
 {pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%", config=dict(displayModeBar=True, displaylogo=False, scrollZoom=True, modeBarButtonsToAdd=["v1hovermode", "toggleSpikelines"]))}
 <script>
+    window.__legendHoverTexts = {legend_hover_texts_off};
+    window.__legendHoverTextsOn = {legend_hover_texts_on};
+    window.__legendHoverTooltip = null;
+
+    function ensureLegendTooltip() {{
+        if (window.__legendHoverTooltip) {{
+            return window.__legendHoverTooltip;
+        }}
+        const tooltip = document.createElement('div');
+        tooltip.className = 'legend-hover-tooltip';
+        document.body.appendChild(tooltip);
+        window.__legendHoverTooltip = tooltip;
+        return tooltip;
+    }}
+
+    function hideLegendTooltip() {{
+        const tooltip = ensureLegendTooltip();
+        tooltip.style.display = 'none';
+    }}
+
+    function showLegendTooltip(text, x, y) {{
+        if (!text) {{
+            hideLegendTooltip();
+            return;
+        }}
+        const tooltip = ensureLegendTooltip();
+        tooltip.innerHTML = text;
+        tooltip.style.left = (x + 16) + 'px';
+        tooltip.style.top = (y + 16) + 'px';
+        tooltip.style.display = 'block';
+    }}
+
+    function bindLegendHoverTooltips() {{
+        const plot = document.querySelector('.js-plotly-plot');
+        if (!plot) {{
+            return;
+        }}
+
+        const legendItems = plot.querySelectorAll('.legendtoggle');
+        legendItems.forEach(function (item, index) {{
+            if (item.getAttribute('data-legend-hover-bound') === '1') {{
+                return;
+            }}
+            item.setAttribute('data-legend-hover-bound', '1');
+            item.addEventListener('mouseenter', function (event) {{
+                showLegendTooltip(window.__legendHoverTexts[index] || '', event.clientX, event.clientY);
+            }});
+            item.addEventListener('mousemove', function (event) {{
+                const tooltip = ensureLegendTooltip();
+                if (tooltip.style.display === 'block') {{
+                    tooltip.style.left = (event.clientX + 16) + 'px';
+                    tooltip.style.top = (event.clientY + 16) + 'px';
+                }}
+            }});
+            item.addEventListener('mouseleave', hideLegendTooltip);
+        }});
+    }}
+
+    window.updateLegendHoverTexts = function (texts) {{
+        window.__legendHoverTexts = Array.isArray(texts) ? texts : [];
+        bindLegendHoverTooltips();
+    }};
+
   document.addEventListener('DOMContentLoaded', function () {{
     function applyPointerCursor() {{
       document.querySelectorAll('.modebar-btn, g.updatemenu-button, g.updatemenu-button *, g.slider *, .legendtoggle').forEach(function (el) {{
@@ -1011,8 +1202,11 @@ def _build_qt_window(fig, window_title):
       }});
     }}
     applyPointerCursor();
+        bindLegendHoverTooltips();
     setTimeout(applyPointerCursor, 300);
     setTimeout(applyPointerCursor, 900);
+        setTimeout(bindLegendHoverTooltips, 300);
+        setTimeout(bindLegendHoverTooltips, 900);
   }});
 </script>
 </body>

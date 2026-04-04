@@ -444,6 +444,11 @@ def _figure_to_html(fig):
     plotly_bundle_uri = os.path.abspath(_ensure_plotlyjs_bundle())
     _, pio = _ensure_plotly_imports()
     qt_fig = _figure_without_embedded_controls(fig)
+    control_meta = getattr(fig.layout, "meta", None) or {}
+    if hasattr(control_meta, "to_plotly_json"):
+        control_meta = control_meta.to_plotly_json()
+    legend_hover_texts_on = json.dumps(control_meta.get("legend_hover_on_texts", []))
+    legend_hover_texts_off = json.dumps(control_meta.get("legend_hover_off_texts", []))
 
     return f"""<!DOCTYPE html>
 <html>
@@ -473,10 +478,104 @@ def _figure_to_html(fig):
     .legendtoggle {{
       cursor: pointer !important;
     }}
+        .legend-hover-tooltip {{
+            position: fixed;
+            display: none;
+            z-index: 9999;
+            pointer-events: none;
+            max-width: 340px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(8, 14, 24, 0.96);
+            color: #F7FAFC;
+            border: 1px solid rgba(123, 229, 255, 0.28);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+            font-size: 12px;
+            line-height: 1.35;
+            white-space: pre-line;
+        }}
   </style>
 </head>
 <body>
 {pio.to_html(qt_fig, full_html=False, include_plotlyjs=False, default_width="100%", default_height="100%", config=dict(displayModeBar=True, displaylogo=False, scrollZoom=True, modeBarButtonsToAdd=["v1hovermode", "toggleSpikelines"]))}
+<script>
+    window.__legendHoverTexts = {legend_hover_texts_off};
+    window.__legendHoverTextsOn = {legend_hover_texts_on};
+    window.__legendHoverTooltip = null;
+
+    function ensureLegendTooltip() {{
+        if (window.__legendHoverTooltip) {{
+            return window.__legendHoverTooltip;
+        }}
+        const tooltip = document.createElement('div');
+        tooltip.className = 'legend-hover-tooltip';
+        document.body.appendChild(tooltip);
+        window.__legendHoverTooltip = tooltip;
+        return tooltip;
+    }}
+
+    function hideLegendTooltip() {{
+        const tooltip = ensureLegendTooltip();
+        tooltip.style.display = 'none';
+    }}
+
+    function showLegendTooltip(text, x, y) {{
+        if (!text) {{
+            hideLegendTooltip();
+            return;
+        }}
+        const tooltip = ensureLegendTooltip();
+        tooltip.innerHTML = text;
+        tooltip.style.left = (x + 16) + 'px';
+        tooltip.style.top = (y + 16) + 'px';
+        tooltip.style.display = 'block';
+    }}
+
+    function bindLegendHoverTooltips() {{
+        const plot = document.querySelector('.js-plotly-plot');
+        if (!plot) {{
+            return;
+        }}
+
+        const legendItems = plot.querySelectorAll('.legendtoggle');
+        legendItems.forEach(function (item, index) {{
+            if (item.getAttribute('data-legend-hover-bound') === '1') {{
+                return;
+            }}
+            item.setAttribute('data-legend-hover-bound', '1');
+            item.addEventListener('mouseenter', function (event) {{
+                showLegendTooltip(window.__legendHoverTexts[index] || '', event.clientX, event.clientY);
+            }});
+            item.addEventListener('mousemove', function (event) {{
+                const tooltip = ensureLegendTooltip();
+                if (tooltip.style.display === 'block') {{
+                    tooltip.style.left = (event.clientX + 16) + 'px';
+                    tooltip.style.top = (event.clientY + 16) + 'px';
+                }}
+            }});
+            item.addEventListener('mouseleave', hideLegendTooltip);
+        }});
+    }}
+
+    window.updateLegendHoverTexts = function (texts) {{
+        window.__legendHoverTexts = Array.isArray(texts) ? texts : [];
+        bindLegendHoverTooltips();
+    }};
+
+    document.addEventListener('DOMContentLoaded', function () {{
+        function applyPointerCursor() {{
+            document.querySelectorAll('.modebar-btn, g.updatemenu-button, g.updatemenu-button *, g.slider *, .legendtoggle').forEach(function (el) {{
+                el.style.cursor = 'pointer';
+            }});
+        }}
+        applyPointerCursor();
+        bindLegendHoverTooltips();
+        setTimeout(applyPointerCursor, 300);
+        setTimeout(applyPointerCursor, 900);
+        setTimeout(bindLegendHoverTooltips, 300);
+        setTimeout(bindLegendHoverTooltips, 900);
+    }});
+</script>
 </body>
 </html>
 """
@@ -512,6 +611,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._scene_meta = {}
         self._view_ready = False
         self._pending_mesh_opacity = None
+        self._show_hover_coordinates = False
         self._last_directory = os.path.expanduser("~/Downloads")
 
         self.setWindowTitle("Pedicle Screw Planner Visualization")
@@ -560,6 +660,8 @@ class GeometryPlanningWindow(QMainWindow):
         self.opacity_slider.setValue(int(round(float(self._args.mesh_opacity) * 100)))
         self.opacity_slider.setFixedWidth(240)
         self.opacity_slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hover_coords_button = QPushButton("Hover Coords")
+        self.hover_coords_button.setCheckable(True)
         self.console_button = QPushButton("Log / Table")
         self.console_button.setCheckable(True)
         self.export_button = QPushButton("Export Image")
@@ -625,6 +727,7 @@ class GeometryPlanningWindow(QMainWindow):
             self.show_traj_button,
             self.show_bbox_button,
             self.hide_bbox_button,
+            self.hover_coords_button,
             self.console_button,
         ):
             button.setStyleSheet(button_style)
@@ -634,6 +737,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.load_button.setCheckable(False)
         self.load_results_button.setCheckable(False)
         self.run_button.setCheckable(False)
+        self.hover_coords_button.setChecked(False)
         self.console_button.setCheckable(True)
         self.export_button.setStyleSheet(export_style)
         self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -693,6 +797,7 @@ class GeometryPlanningWindow(QMainWindow):
         controls_layout.addWidget(self.hide_bbox_button)
         controls_layout.addWidget(self.opacity_label)
         controls_layout.addWidget(self.opacity_slider)
+        controls_layout.addWidget(self.hover_coords_button)
         controls_layout.addWidget(self.console_button)
         controls_layout.addStretch(1)
 
@@ -710,6 +815,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.clicked.connect(lambda: self._set_bbox_visibility(True))
         self.hide_bbox_button.clicked.connect(lambda: self._set_bbox_visibility(False))
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        self.hover_coords_button.clicked.connect(self._toggle_hover_coordinates)
         self.console_button.clicked.connect(self._toggle_planning_console)
         self.export_button.clicked.connect(self._export_image)
 
@@ -738,6 +844,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.setEnabled(loaded)
         self.hide_bbox_button.setEnabled(loaded)
         self.opacity_slider.setEnabled(loaded)
+        self.hover_coords_button.setEnabled(loaded)
         self.console_button.setEnabled(True)
 
     def _set_busy_state(self, busy):
@@ -749,6 +856,7 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.setEnabled((not busy) and self._current_verts is not None)
         self.hide_bbox_button.setEnabled((not busy) and self._current_verts is not None)
         self.opacity_slider.setEnabled((not busy) and self._current_verts is not None)
+        self.hover_coords_button.setEnabled((not busy) and self._current_verts is not None)
         self.console_button.setEnabled(True)
 
     def _show_planning_console(self, tab_index=0):
@@ -789,6 +897,10 @@ class GeometryPlanningWindow(QMainWindow):
         else:
             self.hide_bbox_button.setChecked(True)
         self._apply_scene_visibility_state()
+
+    def _toggle_hover_coordinates(self):
+        self._show_hover_coordinates = self.hover_coords_button.isChecked()
+        self._apply_hover_coordinate_state()
 
     def _on_opacity_changed(self, value):
         self.opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}")
@@ -860,6 +972,24 @@ class GeometryPlanningWindow(QMainWindow):
         if bbox_indices:
             self._restyle_plot({"visible": [self._current_bbox_visible] * len(bbox_indices)}, bbox_indices)
 
+    def _apply_hover_coordinate_state(self):
+        if not self._view_ready or not self._scene_meta:
+            return
+
+        indices = self._scene_meta.get("hover_toggle_indices", [])
+        if not indices:
+            return
+
+        templates_key = "hover_templates_on" if self._show_hover_coordinates else "hover_templates_off"
+        templates = self._scene_meta.get(templates_key, [])
+        if len(indices) != len(templates):
+            return
+
+        self._restyle_plot({"hovertemplate": templates}, indices)
+        legend_texts_key = "legend_hover_on_texts" if self._show_hover_coordinates else "legend_hover_off_texts"
+        legend_texts = self._scene_meta.get(legend_texts_key, [])
+        self.view.page().runJavaScript(f"window.updateLegendHoverTexts({json.dumps(legend_texts)});")
+
     def _on_view_load_finished(self, ok):
         self._view_ready = bool(ok)
         if ok:
@@ -870,6 +1000,7 @@ class GeometryPlanningWindow(QMainWindow):
                     opacity_value = self.opacity_slider.value() / 100.0
                 self._apply_mesh_opacity(opacity_value)
                 self._apply_scene_visibility_state()
+                self._apply_hover_coordinate_state()
         else:
             self._clear_loading_state()
 
@@ -891,6 +1022,7 @@ class GeometryPlanningWindow(QMainWindow):
             show_trajectory_lines=show_trajectory_lines,
             show_entry_markers=not self._args.hide_entry_markers,
             show_tip_markers=self._args.show_tip_markers,
+            show_hover_coordinates=self._show_hover_coordinates,
             v2_neon_trajectories=self._args.v2_neon_trajectories,
             v2_gold_screws=self._args.v2_gold_screws,
             v2_threaded_screws=self._args.v2_threaded_screws,
