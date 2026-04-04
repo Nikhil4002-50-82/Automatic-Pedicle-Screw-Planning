@@ -328,8 +328,8 @@ def build_parser():
     )
     parser.add_argument(
         "--preset",
-        choices=["classic", "surgical", "cinematic"],
-        default="cinematic",
+        choices=["default"],
+        default="default",
         help="Choose the overall visual treatment for the unified viewer.",
     )
     parser.add_argument(

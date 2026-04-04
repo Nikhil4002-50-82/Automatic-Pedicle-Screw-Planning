@@ -135,7 +135,7 @@ def _mask_bounds(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
 
 def build_mask_preview_figure(ct_volume: CTVolume | None, layers: Iterable[MaskLayer]):
     go, _ = _ensure_plotly_imports()
-    style = _style_config("cinematic", "dark")
+    style = _style_config("default", "dark")
     fig = go.Figure()
 
     visible_layers = [layer for layer in layers if layer.visible]
@@ -206,7 +206,7 @@ def build_mask_preview_figure(ct_volume: CTVolume | None, layers: Iterable[MaskL
 def _figure_to_html_document() -> str:
     _, pio = _ensure_plotly_imports()
     bundle_uri = Path(_ensure_plotlyjs_bundle()).as_uri()
-    style = _style_config("cinematic", "dark")
+    style = _style_config("default", "dark")
     paper_bg = style["paper_bgcolor"]
     return f"""<!DOCTYPE html>
 <html>

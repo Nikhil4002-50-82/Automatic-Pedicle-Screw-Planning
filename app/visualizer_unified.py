@@ -316,6 +316,8 @@ def _mask_controls_overlay_html(control_meta):
   window.__screwTraceIndices = {screw_indices_json};
   window.__screwTraceLabels = {screw_labels_json};
   window.__screwTraceVertebraLabels = {json.dumps(control_meta.get("screw_trace_vertebra_labels", []))};
+  window.__screwModeScrewsShowlegend = {json.dumps(control_meta.get("screw_mode_screws_showlegend", []))};
+  window.__screwModeTrajShowlegend = {json.dumps(control_meta.get("screw_mode_traj_showlegend", []))};
   window.__trajectoryTraceIndices = {trajectory_indices_json};
   window.__trajectoryTraceLabels = {trajectory_labels_json};
   window.__trajectoryTraceVertebraLabels = {json.dumps(control_meta.get("trajectory_trace_vertebra_labels", []))};
@@ -380,10 +382,20 @@ def _mask_controls_overlay_html(control_meta):
       Plotly.restyle(plot, {{
         visible: buildVisibility(window.__screwTraceLabels || [], window.__screwTraceVertebraLabels || [], maskStateMap, 'max_diameter', true)
       }}, window.__screwTraceIndices);
+      Plotly.restyle(plot, {{
+        showlegend: Array.from({{length: window.__screwTraceIndices.length}}, function () {{
+          return window.__displayMode === 'max_diameter';
+        }})
+      }}, window.__screwTraceIndices);
     }}
     if (window.__trajectoryTraceIndices && window.__trajectoryTraceIndices.length) {{
       Plotly.restyle(plot, {{
         visible: buildVisibility(window.__trajectoryTraceLabels || [], window.__trajectoryTraceVertebraLabels || [], maskStateMap, 'trajectories', true)
+      }}, window.__trajectoryTraceIndices);
+      Plotly.restyle(plot, {{
+        showlegend: Array.from({{length: window.__trajectoryTraceIndices.length}}, function () {{
+          return window.__displayMode === 'trajectories';
+        }})
       }}, window.__trajectoryTraceIndices);
     }}
     if (window.__entryTraceIndices && window.__entryTraceIndices.length) {{
@@ -474,7 +486,13 @@ def _format_result_hover(result, entry, tip, depth):
 
 def _result_legend_label(result):
     vertebra = str(result.get("vertebra", "")).strip()
-    side = str(result.get("side", "")).strip().title()
+    side_raw = str(result.get("side", "")).strip().lower()
+    if side_raw.startswith("l"):
+        side = "L"
+    elif side_raw.startswith("r"):
+        side = "R"
+    else:
+        side = str(result.get("side", "")).strip().title()
     if vertebra and side:
         return f"{vertebra}-{side}"
     if vertebra:
@@ -573,66 +591,12 @@ def _compute_scene_ranges(
     return [[mins[idx] - total_padding[idx], maxs[idx] + total_padding[idx]] for idx in range(3)]
 
 
-def _style_config(visual_preset="cinematic", theme="dark"):
+def _style_config(visual_preset="default", theme="dark"):
     preset = str(visual_preset).strip().lower()
     theme_key = str(theme).strip().lower()
 
     configs = {
-        "classic": {
-            "template": "plotly_white",
-            "paper_bgcolor": "#FFFFFF",
-            "plot_bgcolor": "#FFFFFF",
-            "scene_bgcolor": "#F7F8FA",
-            "mesh_color": "#D3D7DD",
-            "mesh_opacity": 0.25,
-            "mesh_lighting": dict(ambient=0.65, diffuse=0.45, specular=0.08, roughness=0.9, fresnel=0.02),
-            "mesh_lightposition": dict(x=110, y=140, z=120),
-            "surface_opacity": 0.42,
-            "surface_lighting": dict(ambient=0.35, diffuse=0.85, specular=0.6, roughness=0.28, fresnel=0.15),
-            "surface_lightposition": dict(x=120, y=160, z=150),
-            "left_marker": "#2C7BE5",
-            "left_line": "#2C7BE5",
-            "left_surface_low": "#5B8DEF",
-            "left_surface_high": "#8DB4FF",
-            "right_marker": "#D64550",
-            "right_line": "#D64550",
-            "right_surface_low": "#F08C46",
-            "right_surface_high": "#F5B66F",
-            "safety_plane": "#C93C37",
-            "bounding_box": "rgba(60, 60, 60, 0.45)",
-            "show_axes": True,
-            "show_grid": False,
-            "title_font_color": "#1A1F36",
-            "camera_eye": dict(x=1.6, y=1.45, z=1.2),
-        },
-        "surgical": {
-            "template": "plotly_dark",
-            "paper_bgcolor": "#0F1722",
-            "plot_bgcolor": "#0F1722",
-            "scene_bgcolor": "#141C29",
-            "mesh_color": "#B8C3D1",
-            "mesh_opacity": 0.2,
-            "mesh_lighting": dict(ambient=0.55, diffuse=0.6, specular=0.25, roughness=0.62, fresnel=0.08),
-            "mesh_lightposition": dict(x=120, y=130, z=110),
-            "surface_opacity": 0.38,
-            "surface_lighting": dict(ambient=0.28, diffuse=0.88, specular=0.95, roughness=0.18, fresnel=0.22),
-            "surface_lightposition": dict(x=140, y=180, z=170),
-            "left_marker": "#4BD3FF",
-            "left_line": "#3BE0FF",
-            "left_surface_low": "#9FD7FF",
-            "left_surface_high": "#D8F0FF",
-            "right_marker": "#FF7A59",
-            "right_line": "#FF9166",
-            "right_surface_low": "#F0A44B",
-            "right_surface_high": "#FFD27D",
-            "safety_plane": "#FF4D4D",
-            "bounding_box": "rgba(255, 255, 255, 0.18)",
-            "show_axes": False,
-            "show_grid": False,
-            "title_font_color": "#F7FAFC",
-            "camera_eye": dict(x=1.75, y=1.55, z=1.22),
-        },
-        "cinematic": {
+        "default": {
             "template": "plotly_dark",
             "paper_bgcolor": "#070B12",
             "plot_bgcolor": "#070B12",
@@ -641,17 +605,17 @@ def _style_config(visual_preset="cinematic", theme="dark"):
             "mesh_opacity": 0.18,
             "mesh_lighting": dict(ambient=0.42, diffuse=0.7, specular=0.42, roughness=0.42, fresnel=0.12),
             "mesh_lightposition": dict(x=150, y=180, z=140),
-            "surface_opacity": 0.34,
+            "surface_opacity": 0.25,
             "surface_lighting": dict(ambient=0.2, diffuse=0.95, specular=1.0, roughness=0.12, fresnel=0.28),
             "surface_lightposition": dict(x=170, y=220, z=190),
             "left_marker": "#56E0FF",
             "left_line": "#5BF3FF",
-            "left_surface_low": "#B58A2B",
-            "left_surface_high": "#F5D36C",
+            "left_surface_low": "#A6C973",
+            "left_surface_high": "#A7F56C",
             "right_marker": "#FF7B6B",
             "right_line": "#FF8C66",
-            "right_surface_low": "#C9872F",
-            "right_surface_high": "#FFD07C",
+            "right_surface_low": "#2FC998",
+            "right_surface_high": "#7CFFBB",
             "safety_plane": "#FF4A4A",
             "bounding_box": "rgba(255, 255, 255, 0.14)",
             "show_axes": False,
@@ -662,10 +626,10 @@ def _style_config(visual_preset="cinematic", theme="dark"):
     }
 
     if preset not in configs:
-        preset = "cinematic"
+        preset = "default"
 
     config = dict(configs[preset])
-    if theme_key == "light" and preset != "classic":
+    if theme_key == "light":
         config.update(
             {
                 "template": "plotly_white",
@@ -816,7 +780,7 @@ def _build_result_traces(
     diameter = _default_visual_diameter(result, fallback_diameter=fallback_diameter)
     if diameter > 0:
         screw_mesh = _build_closed_cylinder_mesh(entry, tip, diameter, resolution=screw_resolution)
-        if screw_mesh is not None and show_screw_meshes:
+        if screw_mesh is not None:
             screw_hover_on_templates.append(screw_hover_on)
             screw_hover_off_templates.append(screw_hover_off)
             screw_traces.append(
@@ -830,14 +794,14 @@ def _build_result_traces(
                     opacity=style["surface_opacity"],
                     color=side_style["surface_highlight"] if gold_screws else side_style["surface"],
                     hovertemplate=screw_hover_on if show_hover_coordinates else screw_hover_off,
-                    name=f"{legend_label} Screw",
+                    name=legend_label,
                     legendgroup=legend_group,
                     lighting=style["surface_lighting"],
                     lightposition=style["surface_lightposition"],
                     flatshading=True,
                     showscale=False,
-                    showlegend=False,
-                    visible=True,
+                    showlegend=show_screw_meshes,
+                    visible=show_screw_meshes,
                 )
             )
 
@@ -873,10 +837,10 @@ def _build_result_traces(
                 z=[entry[2], tip[2]],
                 mode="lines",
                 line=dict(color=side_style["line"], width=6),
-                name=f"{legend_label} Trajectory",
+                name=legend_label,
                 legendgroup=legend_group,
                 hovertemplate=trajectory_hover_on if show_hover_coordinates else trajectory_hover_off,
-                showlegend=True,
+                showlegend=initial_trajectory_visibility,
                 visible=initial_trajectory_visibility,
             )
         ],
@@ -947,7 +911,7 @@ def build_visualization(
     screw_mode="threaded",
     theme="dark",
     mesh_opacity=None,
-    visual_preset="cinematic",
+    visual_preset="default",
     show_safety_planes=False,
     show_bounding_box=True,
     show_trajectory_lines=True,
@@ -1189,6 +1153,8 @@ def build_visualization(
     screw_mode_indices = screw_indices + trajectory_indices
     screw_mode_screws_vis = [True] * n_screws + [False] * n_traj
     screw_mode_traj_vis = [False] * n_screws + [True] * n_traj
+    screw_mode_screws_showlegend = [True] * n_screws + [False] * n_traj
+    screw_mode_traj_showlegend = [False] * n_screws + [True] * n_traj
     button_bgcolor = "#4C6382" if style["template"] == "plotly_dark" else "#D9E4F2"
     button_border = "rgba(255,255,255,0.2)" if style["template"] == "plotly_dark" else "rgba(21,32,51,0.18)"
     button_font = dict(color=style["title_font_color"], size=15)
@@ -1212,12 +1178,18 @@ def build_visualization(
                 dict(
                     label="Show Max Diameter",
                     method="restyle",
-                    args=[{"visible": screw_mode_screws_vis}, screw_mode_indices],
+                    args=[
+                        {"visible": screw_mode_screws_vis, "showlegend": screw_mode_screws_showlegend},
+                        screw_mode_indices,
+                    ],
                 ),
                 dict(
                     label="Show Trajectories",
                     method="restyle",
-                    args=[{"visible": screw_mode_traj_vis}, screw_mode_indices],
+                    args=[
+                        {"visible": screw_mode_traj_vis, "showlegend": screw_mode_traj_showlegend},
+                        screw_mode_indices,
+                    ],
                 ),
             ],
         ),
@@ -1357,6 +1329,8 @@ def build_visualization(
             screw_mode_indices=screw_mode_indices,
             screw_mode_screws_vis=screw_mode_screws_vis,
             screw_mode_traj_vis=screw_mode_traj_vis,
+            screw_mode_screws_showlegend=screw_mode_screws_showlegend,
+            screw_mode_traj_showlegend=screw_mode_traj_showlegend,
             mesh_opacity=mesh_opacity,
             initial_screw_mode="screws" if show_screw_meshes else "trajectories",
             initial_bbox_visible=show_bounding_box,
@@ -1955,7 +1929,7 @@ def show_visualization(fig, renderer="auto", window_title="Pedicle Screw Planner
     return window
 
 
-def visualize_surgical_plan(
+def visualize_plan(
     vertsWorld,
     faces,
     resultsList,
@@ -1964,7 +1938,7 @@ def visualize_surgical_plan(
     screw_mode="threaded",
     theme="dark",
     mesh_opacity=None,
-    visual_preset="cinematic",
+    visual_preset="default",
     show_safety_planes=False,
     show_bounding_box=True,
     show_trajectory_lines=True,
@@ -1979,7 +1953,7 @@ def visualize_surgical_plan(
     v2_safety_planes=None,
     fallback_diameter=None,
 ):
-    print("Creating merged surgical visualization...")
+    print("Creating merged visualization...")
     fig = build_visualization(
         verts_world=vertsWorld,
         faces=faces,
@@ -2010,3 +1984,7 @@ def visualize_surgical_plan(
         return show_visualization(target_fig, renderer=renderer)
     
     return fig, show_figure
+
+
+def visualize_surgical_plan(*args, **kwargs):
+    return visualize_plan(*args, **kwargs)

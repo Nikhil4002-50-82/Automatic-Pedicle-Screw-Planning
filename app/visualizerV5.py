@@ -1391,7 +1391,7 @@ def visualize_surgical_plan(
     v2_safety_planes=None,
     fallback_diameter=None,
 ):
-    print("Creating merged surgical visualization...")
+    print("Creating merged visualization...")
     fig = build_visualization(
         verts_world=vertsWorld,
         faces=faces,

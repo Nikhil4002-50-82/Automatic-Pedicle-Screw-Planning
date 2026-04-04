@@ -8,8 +8,8 @@ def build_parser():
     )
     parser.add_argument(
         "--preset",
-        choices=["classic", "surgical", "cinematic"],
-        default="cinematic",
+        choices=["default"],
+        default="default",
         help="Choose the overall visual treatment for the unified viewer.",
     )
     parser.add_argument(
@@ -136,7 +136,7 @@ def main():
     sys.path.insert(0, os.path.dirname(__file__))
     
     import plan_and_visualize_l5 as l5_runner
-    from visualizer_unified import visualize_surgical_plan as unified_visualize
+    from visualizer_unified import visualize_plan as unified_visualize
     
     args = build_parser().parse_args()
     l5_runner.visualize_surgical_plan = build_visualizer_adapter(args, unified_visualize)
