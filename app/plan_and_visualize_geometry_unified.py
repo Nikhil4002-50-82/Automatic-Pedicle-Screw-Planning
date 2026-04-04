@@ -434,8 +434,8 @@ class GeometryPlanningWindow(QMainWindow):
         self._current_verts = None
         self._current_faces = None
         self._current_results = []
-        self._current_display_mode = "max_diameter"
-        self._current_bbox_visible = not args.hide_bounding_box
+        self._current_display_mode = "trajectories"
+        self._current_bbox_visible = False
         self._current_html_path = None
         self._planning_worker = None
         self._planning_console = None
@@ -571,9 +571,10 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_buttons.addButton(self.show_bbox_button)
         self.show_bbox_buttons.addButton(self.hide_bbox_button)
 
-        self.show_screws_button.setChecked(True)
-        self.show_bbox_button.setChecked(self._current_bbox_visible)
-        self.hide_bbox_button.setChecked(not self._current_bbox_visible)
+        self.show_screws_button.setChecked(False)
+        self.show_traj_button.setChecked(True)
+        self.show_bbox_button.setChecked(False)
+        self.hide_bbox_button.setChecked(True)
 
         self.opacity_slider.setStyleSheet(
             "QSlider::groove:horizontal {"
@@ -843,10 +844,12 @@ class GeometryPlanningWindow(QMainWindow):
         self._current_faces = faces
         self._current_results = []
         self._plan_ready = False
-        self._current_display_mode = "max_diameter"
-        self.show_screws_button.setChecked(True)
-        self.show_bbox_button.setChecked(True)
-        self._current_bbox_visible = True
+        self._current_display_mode = "trajectories"
+        self.show_screws_button.setChecked(False)
+        self.show_traj_button.setChecked(True)
+        self.show_bbox_button.setChecked(False)
+        self.hide_bbox_button.setChecked(True)
+        self._current_bbox_visible = False
         self.run_button.setText("Run Planning")
         self._set_loaded_state(True)
         self._render_scene()
@@ -892,8 +895,6 @@ class GeometryPlanningWindow(QMainWindow):
 
         self._current_results = results
         self._plan_ready = bool(results)
-        self._current_display_mode = "max_diameter"
-        self.show_screws_button.setChecked(True)
         self.run_button.setText("Export Plan Data" if self._plan_ready else "Run Planning")
         self._render_scene()
 
