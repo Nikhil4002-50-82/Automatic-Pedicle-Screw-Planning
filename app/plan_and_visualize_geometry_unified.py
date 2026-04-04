@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QDialog,
+    QHeaderView,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -21,6 +22,9 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSlider,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -86,9 +90,24 @@ class PlanningConsole(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Planning Console")
         self.setModal(False)
-        self.resize(900, 420)
+        self.resize(1040, 560)
+
+        self._table_headers = [
+            "VERTEBRA",
+            "SIDE",
+            "DIAMETER (mm)",
+            "LENGTH (mm)",
+            "AXIAL ∠",
+            "SAGITTAL ∠",
+            "ENTRY POINT",
+        ]
 
         layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        log_layout.setContentsMargins(0, 0, 0, 0)
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         self.output.setStyleSheet(
@@ -100,7 +119,36 @@ class PlanningConsole(QDialog):
             "  font-size: 12px;"
             "}"
         )
-        layout.addWidget(self.output)
+        log_layout.addWidget(self.output)
+
+        table_tab = QWidget()
+        table_layout = QVBoxLayout(table_tab)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QTableWidget(0, len(self._table_headers))
+        self.table.setHorizontalHeaderLabels(self._table_headers)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setStyleSheet(
+            "QTableWidget {"
+            "  background-color: #FFFFFF;"
+            "  color: #111827;"
+            "  gridline-color: #D1D5DB;"
+            "}"
+            "QHeaderView::section {"
+            "  background-color: #1F2937;"
+            "  color: #FFFFFF;"
+            "  padding: 8px;"
+            "  font-weight: 700;"
+            "  border: none;"
+            "}"
+        )
+        table_layout.addWidget(self.table)
+
+        self.tabs.addTab(log_tab, "Log")
+        self.tabs.addTab(table_tab, "Table")
+        layout.addWidget(self.tabs)
 
     def append_text(self, text):
         if not text:
@@ -110,6 +158,42 @@ class PlanningConsole(QDialog):
 
     def clear_output(self):
         self.output.clear()
+
+    def clear_table(self):
+        self.table.setRowCount(0)
+
+    def clear_all(self):
+        self.clear_output()
+        self.clear_table()
+
+    def set_results(self, results):
+        self.clear_table()
+        for result in results or []:
+            self._add_result_row(result)
+
+    def _add_result_row(self, result):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        entry = result.get("entry", [])
+        if hasattr(entry, "tolist"):
+            entry = entry.tolist()
+        entry_text = "[" + ", ".join(f"{float(value):.1f}" for value in entry) + "]" if entry else ""
+
+        values = [
+            result.get("vertebra", ""),
+            result.get("side", ""),
+            f"{result.get('diameter', '')} mm",
+            f"{float(result.get('length', 0.0)):.1f} mm",
+            f"{float(result.get('axial_angle', 0.0)):.1f}°",
+            f"{float(result.get('sagittal_angle', 0.0)):.1f}°",
+            entry_text,
+        ]
+
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(str(value))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, column, item)
 
 
 class LoadingOverlay(QWidget):
@@ -815,6 +899,7 @@ class GeometryPlanningWindow(QMainWindow):
 
         if self._planning_console is not None:
             self._planning_console.clear_output()
+            self._planning_console.set_results(results)
             self._planning_console.append_text(f"Loaded planning results from: {file_path}")
 
     def _run_planning(self):
@@ -829,7 +914,7 @@ class GeometryPlanningWindow(QMainWindow):
         if self._planning_console is None:
             self._planning_console = PlanningConsole(self)
         console = self._planning_console
-        console.clear_output()
+        console.clear_all()
         console.append_text(f"Running planning on: {self._current_seg_path}")
         console.show()
         console.raise_()
@@ -849,6 +934,8 @@ class GeometryPlanningWindow(QMainWindow):
         self._current_results = results
         self._plan_ready = True
         self.run_button.setText("Export Plan Data")
+        if self._planning_console is not None:
+            self._planning_console.set_results(results)
         self._render_scene()
 
     def _on_planning_failed(self, message):
