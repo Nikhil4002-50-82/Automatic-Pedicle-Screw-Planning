@@ -316,8 +316,6 @@ def _mask_controls_overlay_html(control_meta):
   window.__screwTraceIndices = {screw_indices_json};
   window.__screwTraceLabels = {screw_labels_json};
   window.__screwTraceVertebraLabels = {json.dumps(control_meta.get("screw_trace_vertebra_labels", []))};
-  window.__screwModeScrewsShowlegend = {json.dumps(control_meta.get("screw_mode_screws_showlegend", []))};
-  window.__screwModeTrajShowlegend = {json.dumps(control_meta.get("screw_mode_traj_showlegend", []))};
   window.__trajectoryTraceIndices = {trajectory_indices_json};
   window.__trajectoryTraceLabels = {trajectory_labels_json};
   window.__trajectoryTraceVertebraLabels = {json.dumps(control_meta.get("trajectory_trace_vertebra_labels", []))};
@@ -327,6 +325,8 @@ def _mask_controls_overlay_html(control_meta):
   window.__tipTraceIndices = {tip_indices_json};
   window.__tipTraceLabels = {tip_labels_json};
   window.__tipTraceVertebraLabels = {json.dumps(control_meta.get("tip_trace_vertebra_labels", []))};
+  window.__vertebraTraceGroups = {json.dumps(control_meta.get("vertebra_trace_groups", {}))};
+  window.__maskVisibilityIndexByLabel = {json.dumps(control_meta.get("mask_visibility_index_by_label", {}))};
 
   const defaultDisplayMode = {json.dumps("max_diameter" if str(control_meta.get("initial_screw_mode", "screws")) == "screws" else "trajectories")};
   window.__displayMode = window.__displayMode || defaultDisplayMode;
@@ -389,6 +389,46 @@ def _mask_controls_overlay_html(control_meta):
     }}
   }}
 
+  function appendGroupVisibility(group, maskVisible, maskStateMap, mergedIndices, mergedValues) {{
+    if (!group) {{
+      return;
+    }}
+    const groupVisibleMap = buildVisibility(
+      group.screw_trace_labels || [],
+      group.screw_trace_vertebra_labels || [],
+      maskStateMap,
+      'max_diameter',
+      true
+    );
+    const trajectoryVisibleMap = buildVisibility(
+      group.trajectory_trace_labels || [],
+      group.trajectory_trace_vertebra_labels || [],
+      maskStateMap,
+      'trajectories',
+      true
+    );
+    const entryVisibleMap = buildVisibility(
+      group.entry_trace_labels || [],
+      group.entry_trace_vertebra_labels || [],
+      maskStateMap,
+      null,
+      !!window.__showEntryMarkers
+    );
+    const tipVisibleMap = buildVisibility(
+      group.tip_trace_labels || [],
+      group.tip_trace_vertebra_labels || [],
+      maskStateMap,
+      null,
+      !!window.__showTipMarkers
+    );
+
+    appendVisibility(group.mask_trace_indices || [], [maskVisible], mergedIndices, mergedValues);
+    appendVisibility(group.screw_trace_indices || [], groupVisibleMap, mergedIndices, mergedValues);
+    appendVisibility(group.trajectory_trace_indices || [], trajectoryVisibleMap, mergedIndices, mergedValues);
+    appendVisibility(group.entry_trace_indices || [], entryVisibleMap, mergedIndices, mergedValues);
+    appendVisibility(group.tip_trace_indices || [], tipVisibleMap, mergedIndices, mergedValues);
+  }}
+
   window.applySceneInteractionState = function (includeLegend) {{
     const plot = document.querySelector('.js-plotly-plot');
     if (!plot || !window.Plotly) {{
@@ -397,31 +437,14 @@ def _mask_controls_overlay_html(control_meta):
     const maskStateMap = buildMaskStateMap();
     const mergedVisibleIndices = [];
     const mergedVisibleValues = [];
-    appendVisibility(window.__maskTraceIndices || [], window.__maskVisibilities || [], mergedVisibleIndices, mergedVisibleValues);
-    appendVisibility(
-      window.__screwTraceIndices || [],
-      buildVisibility(window.__screwTraceLabels || [], window.__screwTraceVertebraLabels || [], maskStateMap, 'max_diameter', true),
-      mergedVisibleIndices,
-      mergedVisibleValues
-    );
-    appendVisibility(
-      window.__trajectoryTraceIndices || [],
-      buildVisibility(window.__trajectoryTraceLabels || [], window.__trajectoryTraceVertebraLabels || [], maskStateMap, 'trajectories', true),
-      mergedVisibleIndices,
-      mergedVisibleValues
-    );
-    appendVisibility(
-      window.__entryTraceIndices || [],
-      buildVisibility(window.__entryTraceLabels || [], window.__entryTraceVertebraLabels || [], maskStateMap, null, !!window.__showEntryMarkers),
-      mergedVisibleIndices,
-      mergedVisibleValues
-    );
-    appendVisibility(
-      window.__tipTraceIndices || [],
-      buildVisibility(window.__tipTraceLabels || [], window.__tipTraceVertebraLabels || [], maskStateMap, null, !!window.__showTipMarkers),
-      mergedVisibleIndices,
-      mergedVisibleValues
-    );
+    const groups = window.__vertebraTraceGroups || {{}};
+    (window.__maskLabels || []).forEach(function (label) {{
+      const key = normalizeMaskKey(label);
+      const group = groups[key];
+      const visIdx = window.__maskVisibilityIndexByLabel ? window.__maskVisibilityIndexByLabel[key] : undefined;
+      const maskVisible = visIdx !== undefined ? !!(window.__maskVisibilities || [])[visIdx] : true;
+      appendGroupVisibility(group, maskVisible, maskStateMap, mergedVisibleIndices, mergedVisibleValues);
+    }});
 
     if (mergedVisibleIndices.length) {{
       Plotly.restyle(plot, {{
@@ -446,6 +469,29 @@ def _mask_controls_overlay_html(control_meta):
     window.applySceneInteractionState(false);
   }};
 
+  window.applyMaskVisibilityForLabel = function (label) {{
+    const plot = document.querySelector('.js-plotly-plot');
+    if (!plot || !window.Plotly) {{
+      return;
+    }}
+    const key = normalizeMaskKey(label);
+    const group = (window.__vertebraTraceGroups || {{}})[key];
+    if (!group) {{
+      return;
+    }}
+    const maskStateMap = buildMaskStateMap();
+    const visIdx = window.__maskVisibilityIndexByLabel ? window.__maskVisibilityIndexByLabel[key] : undefined;
+    const maskVisible = visIdx !== undefined ? !!(window.__maskVisibilities || [])[visIdx] : true;
+    const mergedVisibleIndices = [];
+    const mergedVisibleValues = [];
+    appendGroupVisibility(group, maskVisible, maskStateMap, mergedVisibleIndices, mergedVisibleValues);
+    if (mergedVisibleIndices.length) {{
+      Plotly.restyle(plot, {{
+        visible: mergedVisibleValues
+      }}, mergedVisibleIndices);
+    }}
+  }};
+
   function bindMaskVisibilityControls() {{
     const plot = document.querySelector('.js-plotly-plot');
     const panel = document.querySelector('.mask-visibility-overlay');
@@ -466,7 +512,10 @@ def _mask_controls_overlay_html(control_meta):
         const idx = window.__maskTraceIndices.indexOf(traceIndex);
         if (idx >= 0) {{
           window.__maskVisibilities[idx] = this.checked;
-          window.applySceneInteractionState(false);
+          const label = window.__maskLabels && window.__maskLabels[idx];
+          if (label && typeof window.applyMaskVisibilityForLabel === 'function') {{
+            window.applyMaskVisibilityForLabel(label);
+          }}
         }}
       }});
     }});
@@ -1218,6 +1267,57 @@ def build_visualization(
     screw_mode_traj_vis = [False] * n_screws + [True] * n_traj
     screw_mode_screws_showlegend = [True] * n_screws + [False] * n_traj
     screw_mode_traj_showlegend = [False] * n_screws + [True] * n_traj
+    mask_trace_index_by_label = {label: idx for label, idx in zip(mask_labels, mask_trace_indices)}
+    mask_visibility_index_by_label = {label: idx for idx, label in enumerate(mask_labels)}
+    vertebra_trace_groups = {}
+    for idx, result in enumerate(results_list):
+        label = _result_mask_label(result)
+        group = vertebra_trace_groups.setdefault(
+            label,
+            {
+                "mask_visibility_index": mask_visibility_index_by_label.get(label, -1),
+                "mask_trace_indices": [],
+                "screw_trace_indices": [],
+                "screw_trace_labels": [],
+                "screw_trace_vertebra_labels": [],
+                "trajectory_trace_indices": [],
+                "trajectory_trace_labels": [],
+                "trajectory_trace_vertebra_labels": [],
+                "entry_trace_indices": [],
+                "entry_trace_labels": [],
+                "entry_trace_vertebra_labels": [],
+                "tip_trace_indices": [],
+                "tip_trace_labels": [],
+                "tip_trace_vertebra_labels": [],
+            },
+        )
+        mask_trace_index = mask_trace_index_by_label.get(label)
+        if mask_trace_index is not None:
+            group["mask_trace_indices"] = [mask_trace_index]
+        if idx < len(screw_indices):
+            group["screw_trace_indices"].append(screw_indices[idx])
+        if idx < len(screw_trace_labels):
+            group["screw_trace_labels"].append(screw_trace_labels[idx])
+        if idx < len(screw_trace_vertebra_labels):
+            group["screw_trace_vertebra_labels"].append(screw_trace_vertebra_labels[idx])
+        if idx < len(trajectory_indices):
+            group["trajectory_trace_indices"].append(trajectory_indices[idx])
+        if idx < len(trajectory_trace_labels):
+            group["trajectory_trace_labels"].append(trajectory_trace_labels[idx])
+        if idx < len(trajectory_trace_vertebra_labels):
+            group["trajectory_trace_vertebra_labels"].append(trajectory_trace_vertebra_labels[idx])
+        if idx < len(entry_indices):
+            group["entry_trace_indices"].append(entry_indices[idx])
+        if idx < len(entry_trace_labels):
+            group["entry_trace_labels"].append(entry_trace_labels[idx])
+        if idx < len(entry_trace_vertebra_labels):
+            group["entry_trace_vertebra_labels"].append(entry_trace_vertebra_labels[idx])
+        if idx < len(tip_indices):
+            group["tip_trace_indices"].append(tip_indices[idx])
+        if idx < len(tip_trace_labels):
+            group["tip_trace_labels"].append(tip_trace_labels[idx])
+        if idx < len(tip_trace_vertebra_labels):
+            group["tip_trace_vertebra_labels"].append(tip_trace_vertebra_labels[idx])
     button_bgcolor = "#4C6382" if style["template"] == "plotly_dark" else "#D9E4F2"
     button_border = "rgba(255,255,255,0.2)" if style["template"] == "plotly_dark" else "rgba(21,32,51,0.18)"
     button_font = dict(color=style["title_font_color"], size=15)
@@ -1394,6 +1494,8 @@ def build_visualization(
             screw_mode_traj_vis=screw_mode_traj_vis,
             screw_mode_screws_showlegend=screw_mode_screws_showlegend,
             screw_mode_traj_showlegend=screw_mode_traj_showlegend,
+            vertebra_trace_groups=vertebra_trace_groups,
+            mask_visibility_index_by_label=mask_visibility_index_by_label,
             mesh_opacity=mesh_opacity,
             initial_screw_mode="screws" if show_screw_meshes else "trajectories",
             initial_bbox_visible=show_bounding_box,
