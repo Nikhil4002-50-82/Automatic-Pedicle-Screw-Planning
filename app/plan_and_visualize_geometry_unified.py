@@ -97,6 +97,23 @@ class PlanningWorker(QThread):
         self.results_ready.emit(results)
 
 
+class MaskLoadWorker(QThread):
+    results_ready = pyqtSignal(object, object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, seg_path):
+        super().__init__()
+        self._seg_path = seg_path
+
+    def run(self):
+        try:
+            mask_meshes, mask_shape = _build_mask_meshes(self._seg_path)
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.results_ready.emit(mask_meshes, mask_shape)
+
+
 class PlanningConsole(QDialog):
     closed = pyqtSignal()
 
@@ -432,11 +449,23 @@ def _build_mask_meshes(seg_path):
         mask = np.isclose(data, label_value)
         if not mask.any():
             continue
+        coords = np.argwhere(mask)
+        if coords.size == 0:
+            continue
+        padding = 2
+        mins = np.maximum(coords.min(axis=0) - padding, 0)
+        maxs = np.minimum(coords.max(axis=0) + padding + 1, np.array(mask.shape, dtype=np.int32))
+        slices = tuple(slice(int(lo), int(hi)) for lo, hi in zip(mins, maxs))
+        cropped_mask = np.asarray(mask[slices], dtype=np.uint8)
+        if not np.any(cropped_mask):
+            continue
         try:
-            verts, faces, _, _ = marching_cubes(mask.astype("uint8"), level=0.5)
+            verts, faces, _, _ = marching_cubes(cropped_mask, level=0.5)
         except ValueError:
             continue
-        verts_world = nib.affines.apply_affine(affine, verts)
+        crop_affine = np.array(affine, dtype=np.float64, copy=True)
+        crop_affine[:3, 3] = nib.affines.apply_affine(affine, mins)
+        verts_world = nib.affines.apply_affine(crop_affine, verts)
         mask_meshes.append(
             {
                 "label": _mask_label_name(label_value),
@@ -455,7 +484,7 @@ def _build_mask_meshes(seg_path):
 
 def run_nifti_load(seg_path):
     nii = nib.load(seg_path)
-    return nii.get_fdata(), nii.header.get_zooms(), nii.affine
+    return np.asanyarray(nii.dataobj), nii.header.get_zooms(), nii.affine
 
 
 def _blank_html(background_color):
@@ -729,6 +758,8 @@ class GeometryPlanningWindow(QMainWindow):
         self._show_hover_coordinates = False
         self._mask_visibility = {}
         self._scene_camera = None
+        self._mask_worker = None
+        self._pending_mask_path = None
         self._last_directory = os.path.expanduser("~/Downloads")
 
         self.setWindowTitle("Pedicle Screw Planner Visualization")
@@ -1262,12 +1293,20 @@ class GeometryPlanningWindow(QMainWindow):
             return
 
         self._last_directory = os.path.dirname(file_path)
+        if self._mask_worker is not None:
+            return
+        self._pending_mask_path = file_path
         self._set_loading_state("Loading Mask", "Building the anatomical surface from the selected segmentation.")
-        try:
-            mask_meshes, mask_shape = _build_mask_meshes(file_path)
-        except Exception as exc:
-            self._clear_loading_state()
-            QMessageBox.critical(self, "Mask Load Failed", str(exc))
+        self._mask_worker = MaskLoadWorker(file_path)
+        self._mask_worker.results_ready.connect(self._on_mask_loaded)
+        self._mask_worker.failed.connect(self._on_mask_load_failed)
+        self._mask_worker.finished.connect(self._on_mask_load_finished)
+        self._mask_worker.start()
+
+    def _on_mask_loaded(self, mask_meshes, mask_shape):
+        file_path = self._pending_mask_path
+        self._pending_mask_path = None
+        if not file_path:
             return
 
         self._current_seg_path = file_path
@@ -1284,7 +1323,15 @@ class GeometryPlanningWindow(QMainWindow):
         self.run_button.setText("Run Planning")
         self._mask_visibility = {mesh["label"]: True for mesh in mask_meshes}
         self._set_loaded_state(True)
-        self._render_scene()
+        self._render_scene_delayed()
+
+    def _on_mask_load_failed(self, message):
+        self._pending_mask_path = None
+        self._clear_loading_state()
+        QMessageBox.critical(self, "Mask Load Failed", message)
+
+    def _on_mask_load_finished(self):
+        self._mask_worker = None
 
     def _load_results(self):
         if not self._current_seg_path:
