@@ -1125,8 +1125,8 @@ class GeometryPlanningWindow(QMainWindow):
                     window.__displayMode = {json.dumps(self._current_display_mode)};
                     window.__showEntryMarkers = {json.dumps(not self._args.hide_entry_markers)};
                     window.__showTipMarkers = {json.dumps(bool(self._args.show_tip_markers))};
-                    if (typeof window.applyMaskVisibilityState === 'function') {{
-                        window.applyMaskVisibilityState();
+                    if (typeof window.applySceneInteractionState === 'function') {{
+                        window.applySceneInteractionState(true);
                     }}
                 }})();
                 """

@@ -369,45 +369,81 @@ def _mask_controls_overlay_html(control_meta):
     return stateMap;
   }}
 
-  window.applyMaskVisibilityState = function () {{
+  function appendVisibility(indices, values, mergedIndices, mergedValues) {{
+    if (!indices || !indices.length || !values || !values.length) {{
+      return;
+    }}
+    for (let i = 0; i < indices.length; i++) {{
+      mergedIndices.push(indices[i]);
+      mergedValues.push(!!values[i]);
+    }}
+  }}
+
+  function appendRepeatedVisibility(indices, value, mergedIndices, mergedValues) {{
+    if (!indices || !indices.length) {{
+      return;
+    }}
+    for (let i = 0; i < indices.length; i++) {{
+      mergedIndices.push(indices[i]);
+      mergedValues.push(!!value);
+    }}
+  }}
+
+  window.applySceneInteractionState = function (includeLegend) {{
     const plot = document.querySelector('.js-plotly-plot');
     if (!plot || !window.Plotly) {{
       return;
     }}
     const maskStateMap = buildMaskStateMap();
-    Plotly.restyle(plot, {{
-      visible: window.__maskVisibilities.slice()
-    }}, window.__maskTraceIndices || []);
-    if (window.__screwTraceIndices && window.__screwTraceIndices.length) {{
+    const mergedVisibleIndices = [];
+    const mergedVisibleValues = [];
+    appendVisibility(window.__maskTraceIndices || [], window.__maskVisibilities || [], mergedVisibleIndices, mergedVisibleValues);
+    appendVisibility(
+      window.__screwTraceIndices || [],
+      buildVisibility(window.__screwTraceLabels || [], window.__screwTraceVertebraLabels || [], maskStateMap, 'max_diameter', true),
+      mergedVisibleIndices,
+      mergedVisibleValues
+    );
+    appendVisibility(
+      window.__trajectoryTraceIndices || [],
+      buildVisibility(window.__trajectoryTraceLabels || [], window.__trajectoryTraceVertebraLabels || [], maskStateMap, 'trajectories', true),
+      mergedVisibleIndices,
+      mergedVisibleValues
+    );
+    appendVisibility(
+      window.__entryTraceIndices || [],
+      buildVisibility(window.__entryTraceLabels || [], window.__entryTraceVertebraLabels || [], maskStateMap, null, !!window.__showEntryMarkers),
+      mergedVisibleIndices,
+      mergedVisibleValues
+    );
+    appendVisibility(
+      window.__tipTraceIndices || [],
+      buildVisibility(window.__tipTraceLabels || [], window.__tipTraceVertebraLabels || [], maskStateMap, null, !!window.__showTipMarkers),
+      mergedVisibleIndices,
+      mergedVisibleValues
+    );
+
+    if (mergedVisibleIndices.length) {{
       Plotly.restyle(plot, {{
-        visible: buildVisibility(window.__screwTraceLabels || [], window.__screwTraceVertebraLabels || [], maskStateMap, 'max_diameter', true)
-      }}, window.__screwTraceIndices);
-      Plotly.restyle(plot, {{
-        showlegend: Array.from({{length: window.__screwTraceIndices.length}}, function () {{
-          return window.__displayMode === 'max_diameter';
-        }})
-      }}, window.__screwTraceIndices);
+        visible: mergedVisibleValues
+      }}, mergedVisibleIndices);
     }}
-    if (window.__trajectoryTraceIndices && window.__trajectoryTraceIndices.length) {{
-      Plotly.restyle(plot, {{
-        visible: buildVisibility(window.__trajectoryTraceLabels || [], window.__trajectoryTraceVertebraLabels || [], maskStateMap, 'trajectories', true)
-      }}, window.__trajectoryTraceIndices);
-      Plotly.restyle(plot, {{
-        showlegend: Array.from({{length: window.__trajectoryTraceIndices.length}}, function () {{
-          return window.__displayMode === 'trajectories';
-        }})
-      }}, window.__trajectoryTraceIndices);
+
+    if (includeLegend) {{
+      const legendIndices = [];
+      const legendVisible = [];
+      appendRepeatedVisibility(window.__screwTraceIndices || [], window.__displayMode === 'max_diameter', legendIndices, legendVisible);
+      appendRepeatedVisibility(window.__trajectoryTraceIndices || [], window.__displayMode === 'trajectories', legendIndices, legendVisible);
+      if (legendIndices.length) {{
+        Plotly.restyle(plot, {{
+          showlegend: legendVisible
+        }}, legendIndices);
+      }}
     }}
-    if (window.__entryTraceIndices && window.__entryTraceIndices.length) {{
-      Plotly.restyle(plot, {{
-        visible: buildVisibility(window.__entryTraceLabels || [], window.__entryTraceVertebraLabels || [], maskStateMap, null, !!window.__showEntryMarkers)
-      }}, window.__entryTraceIndices);
-    }}
-    if (window.__tipTraceIndices && window.__tipTraceIndices.length) {{
-      Plotly.restyle(plot, {{
-        visible: buildVisibility(window.__tipTraceLabels || [], window.__tipTraceVertebraLabels || [], maskStateMap, null, !!window.__showTipMarkers)
-      }}, window.__tipTraceIndices);
-    }}
+  }};
+
+  window.applyMaskVisibilityState = function () {{
+    window.applySceneInteractionState(false);
   }};
 
   function bindMaskVisibilityControls() {{
@@ -430,19 +466,46 @@ def _mask_controls_overlay_html(control_meta):
         const idx = window.__maskTraceIndices.indexOf(traceIndex);
         if (idx >= 0) {{
           window.__maskVisibilities[idx] = this.checked;
-          window.applyMaskVisibilityState();
+          window.applySceneInteractionState(false);
         }}
       }});
     }});
   }}
 
+  function bindModeButtonSync() {{
+    const plot = document.querySelector('.js-plotly-plot');
+    if (!plot || !window.Plotly) {{
+      return;
+    }}
+    if (plot.getAttribute('data-mode-bound') === '1') {{
+      return;
+    }}
+    plot.setAttribute('data-mode-bound', '1');
+    plot.on('plotly_buttonclicked', function (event) {{
+      const label = String(event && event.button && event.button.label || '');
+      if (label === 'Show Max Diameter') {{
+        window.__displayMode = 'max_diameter';
+      }} else if (label === 'Show Trajectories') {{
+        window.__displayMode = 'trajectories';
+      }} else {{
+        return;
+      }}
+      setTimeout(function () {{
+        window.applySceneInteractionState(true);
+      }}, 0);
+    }});
+  }}
+
   document.addEventListener('DOMContentLoaded', function () {{
     bindMaskVisibilityControls();
-    window.applyMaskVisibilityState();
+    bindModeButtonSync();
+    window.applySceneInteractionState(true);
     setTimeout(bindMaskVisibilityControls, 300);
     setTimeout(bindMaskVisibilityControls, 900);
-    setTimeout(window.applyMaskVisibilityState, 300);
-    setTimeout(window.applyMaskVisibilityState, 900);
+    setTimeout(bindModeButtonSync, 300);
+    setTimeout(bindModeButtonSync, 900);
+    setTimeout(window.applySceneInteractionState, 300, true);
+    setTimeout(window.applySceneInteractionState, 900, true);
   }});
 </script>
 """
