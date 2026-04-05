@@ -33,6 +33,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 try:
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+except ImportError:  # pragma: no cover - keep a clear failure path for viewer-only usage.
+    QWebEnginePage = None
+
+try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 except ImportError:  # pragma: no cover - required for the viewer, but keep the message clear.
     QWebEngineView = None
@@ -741,12 +746,22 @@ class GeometryPlanningWindow(QMainWindow):
         if QWebEngineView is None:
             raise RuntimeError("PyQt6.QtWebEngineWidgets is required to display the unified viewer.")
 
+        if QWebEnginePage is not None:
+            class _ConsolePage(QWebEnginePage):
+                def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):  # type: ignore[override]
+                    print(str(message))
+                    super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
+        else:
+            _ConsolePage = None
+
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
         self.view = QWebEngineView()
+        if _ConsolePage is not None:
+            self.view.setPage(_ConsolePage(self.view))
         content_layout.addWidget(self.view, 1)
 
         controls_panel = QWidget()
@@ -770,7 +785,8 @@ class GeometryPlanningWindow(QMainWindow):
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(5, 100)
         self.opacity_slider.setValue(int(round(float(self._args.mesh_opacity) * 100)))
-        self.opacity_slider.setFixedWidth(240)
+        self.opacity_slider.setMinimumWidth(180)
+        self.opacity_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.opacity_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hover_coords_button = QPushButton("Hover Coords")
         self.hover_coords_button.setCheckable(True)
@@ -907,11 +923,12 @@ class GeometryPlanningWindow(QMainWindow):
         controls_layout.addWidget(self.show_traj_button)
         controls_layout.addWidget(self.show_bbox_button)
         controls_layout.addWidget(self.hide_bbox_button)
+        controls_layout.addStretch(1)
         controls_layout.addWidget(self.opacity_label)
-        controls_layout.addWidget(self.opacity_slider)
+        controls_layout.addWidget(self.opacity_slider, 1)
+        controls_layout.addStretch(1)
         controls_layout.addWidget(self.hover_coords_button)
         controls_layout.addWidget(self.console_button)
-        controls_layout.addStretch(1)
 
         root_layout.setStretchFactor(self.view, 1)
 
@@ -1125,8 +1142,8 @@ class GeometryPlanningWindow(QMainWindow):
                     window.__displayMode = {json.dumps(self._current_display_mode)};
                     window.__showEntryMarkers = {json.dumps(not self._args.hide_entry_markers)};
                     window.__showTipMarkers = {json.dumps(bool(self._args.show_tip_markers))};
-                    if (typeof window.applySceneInteractionState === 'function') {{
-                        window.applySceneInteractionState(true);
+                    if (typeof window.applyDisplayModeState === 'function') {{
+                        window.applyDisplayModeState();
                     }}
                 }})();
                 """
@@ -1156,13 +1173,6 @@ class GeometryPlanningWindow(QMainWindow):
         self._view_ready = bool(ok)
         if ok:
             QTimer.singleShot(120, self._clear_loading_state)
-            if self._current_mask_meshes is not None:
-                opacity_value = self._pending_mesh_opacity
-                if opacity_value is None:
-                    opacity_value = self.opacity_slider.value() / 100.0
-                self._apply_mesh_opacity(opacity_value)
-                self._apply_scene_visibility_state()
-                self._apply_hover_coordinate_state()
         else:
             self._clear_loading_state()
 

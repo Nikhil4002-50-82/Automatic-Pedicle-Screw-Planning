@@ -389,6 +389,14 @@ def _mask_controls_overlay_html(control_meta):
     }}
   }}
 
+  function logPerf(label, detail) {{
+    const parts = ['[PERF]', label];
+    Object.keys(detail || {{}}).forEach(function (key) {{
+      parts.push(key + '=' + String(detail[key]));
+    }});
+    console.log(parts.join(' '));
+  }}
+
   function appendGroupVisibility(group, maskVisible, maskStateMap, mergedIndices, mergedValues) {{
     if (!group) {{
       return;
@@ -434,6 +442,7 @@ def _mask_controls_overlay_html(control_meta):
     if (!plot || !window.Plotly) {{
       return;
     }}
+    const tStart = performance.now();
     const maskStateMap = buildMaskStateMap();
     const mergedVisibleIndices = [];
     const mergedVisibleValues = [];
@@ -446,11 +455,9 @@ def _mask_controls_overlay_html(control_meta):
       appendGroupVisibility(group, maskVisible, maskStateMap, mergedVisibleIndices, mergedVisibleValues);
     }});
 
-    if (mergedVisibleIndices.length) {{
-      Plotly.restyle(plot, {{
+    const restylePromise = mergedVisibleIndices.length ? Plotly.restyle(plot, {{
         visible: mergedVisibleValues
-      }}, mergedVisibleIndices);
-    }}
+      }}, mergedVisibleIndices) : null;
 
     if (includeLegend) {{
       const legendIndices = [];
@@ -463,10 +470,69 @@ def _mask_controls_overlay_html(control_meta):
         }}, legendIndices);
       }}
     }}
+
+    const finish = function () {{
+      logPerf('scene-update', {{
+        includeLegend: !!includeLegend,
+        displayMode: window.__displayMode,
+        masks: (window.__maskTraceIndices || []).length,
+        affectedTraces: mergedVisibleIndices.length,
+        elapsedMs: (performance.now() - tStart).toFixed(2)
+      }});
+    }};
+
+    if (restylePromise && typeof restylePromise.then === 'function') {{
+      restylePromise.then(finish).catch(function () {{
+        finish();
+      }});
+    }} else {{
+      finish();
+    }}
   }};
 
   window.applyMaskVisibilityState = function () {{
     window.applySceneInteractionState(false);
+  }};
+
+  window.applyDisplayModeState = function () {{
+    const plot = document.querySelector('.js-plotly-plot');
+    if (!plot || !window.Plotly) {{
+      return;
+    }}
+    const tStart = performance.now();
+    const maskStateMap = buildMaskStateMap();
+    const mergedVisibleIndices = [];
+    const mergedVisibleValues = [];
+    appendVisibility(
+      window.__screwTraceIndices || [],
+      buildVisibility(window.__screwTraceLabels || [], window.__screwTraceVertebraLabels || [], maskStateMap, 'max_diameter', true),
+      mergedVisibleIndices,
+      mergedVisibleValues
+    );
+    appendVisibility(
+      window.__trajectoryTraceIndices || [],
+      buildVisibility(window.__trajectoryTraceLabels || [], window.__trajectoryTraceVertebraLabels || [], maskStateMap, 'trajectories', true),
+      mergedVisibleIndices,
+      mergedVisibleValues
+    );
+    const legendIndices = [];
+    const legendVisible = [];
+    appendRepeatedVisibility(window.__screwTraceIndices || [], window.__displayMode === 'max_diameter', legendIndices, legendVisible);
+    appendRepeatedVisibility(window.__trajectoryTraceIndices || [], window.__displayMode === 'trajectories', legendIndices, legendVisible);
+    if (mergedVisibleIndices.length) {{
+      const payload = {{
+        visible: mergedVisibleValues,
+        showlegend: legendVisible
+      }};
+      Plotly.restyle(plot, payload, mergedVisibleIndices);
+    }}
+
+    logPerf('mode-update', {{
+      displayMode: window.__displayMode,
+      screwTraces: (window.__screwTraceIndices || []).length,
+      trajectoryTraces: (window.__trajectoryTraceIndices || []).length,
+      elapsedMs: (performance.now() - tStart).toFixed(2)
+    }});
   }};
 
   window.applyMaskVisibilityForLabel = function (label) {{
@@ -540,7 +606,9 @@ def _mask_controls_overlay_html(control_meta):
         return;
       }}
       setTimeout(function () {{
-        window.applySceneInteractionState(true);
+        if (typeof window.applyDisplayModeState === 'function') {{
+          window.applyDisplayModeState();
+        }}
       }}, 0);
     }});
   }}
@@ -548,13 +616,10 @@ def _mask_controls_overlay_html(control_meta):
   document.addEventListener('DOMContentLoaded', function () {{
     bindMaskVisibilityControls();
     bindModeButtonSync();
-    window.applySceneInteractionState(true);
     setTimeout(bindMaskVisibilityControls, 300);
     setTimeout(bindMaskVisibilityControls, 900);
     setTimeout(bindModeButtonSync, 300);
     setTimeout(bindModeButtonSync, 900);
-    setTimeout(window.applySceneInteractionState, 300, true);
-    setTimeout(window.applySceneInteractionState, 900, true);
   }});
 </script>
 """
@@ -1530,6 +1595,7 @@ def _build_qt_window(fig, window_title):
     from pathlib import Path
     from PyQt6.QtCore import Qt, QUrl
     from PyQt6.QtCore import QTimer
+    from PyQt6.QtWebEngineCore import QWebEnginePage
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWidgets import (
         QApplication,
@@ -1543,6 +1609,11 @@ def _build_qt_window(fig, window_title):
         QVBoxLayout,
         QWidget,
     )
+
+    class _ConsolePage(QWebEnginePage):
+        def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):  # type: ignore[override]
+            print(str(message))
+            super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
 
     paper_bg = getattr(fig.layout, "paper_bgcolor", None) or "#0B1320"
     control_meta = getattr(fig.layout, "meta", None) or {}
@@ -1949,6 +2020,7 @@ def _build_qt_window(fig, window_title):
     right_layout.setSpacing(0)
 
     view = QWebEngineView()
+    view.setPage(_ConsolePage(view))
     view.load(QUrl.fromLocalFile(html_path))
     right_layout.addWidget(view)
     right_layout.setStretchFactor(view, 1)  # Make plot expand to fill available space
