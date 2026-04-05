@@ -327,7 +327,6 @@ def _mask_controls_overlay_html(control_meta):
   window.__tipTraceVertebraLabels = {json.dumps(control_meta.get("tip_trace_vertebra_labels", []))};
   window.__vertebraTraceGroups = {json.dumps(control_meta.get("vertebra_trace_groups", {}))};
   window.__maskVisibilityIndexByLabel = {json.dumps(control_meta.get("mask_visibility_index_by_label", {}))};
-  window.__hasPlanningTraces = {json.dumps(bool(screw_trace_indices or trajectory_trace_indices or entry_trace_indices or tip_trace_indices))};
 
   const defaultDisplayMode = {json.dumps("max_diameter" if str(control_meta.get("initial_screw_mode", "screws")) == "screws" else "trajectories")};
   window.__displayMode = window.__displayMode || defaultDisplayMode;
@@ -542,31 +541,13 @@ def _mask_controls_overlay_html(control_meta):
       return;
     }}
     const key = normalizeMaskKey(label);
-    const visIdx = window.__maskVisibilityIndexByLabel ? window.__maskVisibilityIndexByLabel[key] : undefined;
-    const maskVisible = visIdx !== undefined ? !!(window.__maskVisibilities || [])[visIdx] : true;
-    const traceIndex = visIdx !== undefined ? (window.__maskTraceIndices || [])[visIdx] : undefined;
-
-    if (!window.__hasPlanningTraces) {{
-      if (traceIndex === undefined) {{
-        return;
-      }}
-      Plotly.restyle(plot, {{
-        visible: [maskVisible]
-      }}, [traceIndex]);
-      return;
-    }}
-
-    const maskStateMap = buildMaskStateMap();
     const group = (window.__vertebraTraceGroups || {{}})[key];
     if (!group) {{
-      if (traceIndex !== undefined) {{
-        Plotly.restyle(plot, {{
-          visible: [maskVisible]
-        }}, [traceIndex]);
-      }}
       return;
     }}
-
+    const maskStateMap = buildMaskStateMap();
+    const visIdx = window.__maskVisibilityIndexByLabel ? window.__maskVisibilityIndexByLabel[key] : undefined;
+    const maskVisible = visIdx !== undefined ? !!(window.__maskVisibilities || [])[visIdx] : true;
     const mergedVisibleIndices = [];
     const mergedVisibleValues = [];
     appendGroupVisibility(group, maskVisible, maskStateMap, mergedVisibleIndices, mergedVisibleValues);
@@ -598,11 +579,7 @@ def _mask_controls_overlay_html(control_meta):
         if (idx >= 0) {{
           window.__maskVisibilities[idx] = this.checked;
           const label = window.__maskLabels && window.__maskLabels[idx];
-          if (!window.__hasPlanningTraces && window.Plotly) {{
-            Plotly.restyle(plot, {{
-              visible: [this.checked]
-            }}, [traceIndex]);
-          }} else if (label && typeof window.applyMaskVisibilityForLabel === 'function') {{
+          if (label && typeof window.applyMaskVisibilityForLabel === 'function') {{
             window.applyMaskVisibilityForLabel(label);
           }}
         }}
@@ -1635,7 +1612,8 @@ def _build_qt_window(fig, window_title):
 
     class _ConsolePage(QWebEnginePage):
         def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):  # type: ignore[override]
-            return
+            print(str(message))
+            super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
 
     paper_bg = getattr(fig.layout, "paper_bgcolor", None) or "#0B1320"
     control_meta = getattr(fig.layout, "meta", None) or {}
@@ -2073,21 +2051,7 @@ def _build_qt_window(fig, window_title):
             (function() {{
                 const plot = document.querySelector('.js-plotly-plot');
                 if (!plot || !window.Plotly) return;
-                const camera = window.__plotlyCamera || (plot.layout && plot.layout.scene && plot.layout.scene.camera ? JSON.parse(JSON.stringify(plot.layout.scene.camera)) : null);
-                const result = Plotly.restyle(plot, {json.dumps(payload)}, {json.dumps(indices)});
-                const restoreCamera = function() {{
-                    if (!camera) return;
-                    Plotly.relayout(plot, {{'scene.camera': camera}});
-                }};
-                if (result && typeof result.then === 'function') {{
-                    result.then(function() {{
-                        setTimeout(restoreCamera, 0);
-                    }}).catch(function() {{
-                        restoreCamera();
-                    }});
-                }} else {{
-                    setTimeout(restoreCamera, 0);
-                }}
+                Plotly.restyle(plot, {json.dumps(payload)}, {json.dumps(indices)});
             }})();
             """
         )
@@ -2107,22 +2071,12 @@ def _build_qt_window(fig, window_title):
         )
 
     pending_opacity_value = {"value": float(control_meta.get("mesh_opacity", 0.25))}
-    last_applied_opacity_value = {"value": None}
     opacity_update_timer = QTimer(panel_widget)
     opacity_update_timer.setSingleShot(True)
-    opacity_update_timer.setInterval(24)
-
-    def flush_mesh_opacity():
-        value = pending_opacity_value["value"]
-        if value != last_applied_opacity_value["value"]:
-            set_mesh_opacity(value)
-            last_applied_opacity_value["value"] = value
-        if opacity_slider.isSliderDown() and pending_opacity_value["value"] != last_applied_opacity_value["value"]:
-            opacity_update_timer.start()
-        else:
-            opacity_update_timer.stop()
-
-    opacity_update_timer.timeout.connect(flush_mesh_opacity)
+    opacity_update_timer.setInterval(60)
+    opacity_update_timer.timeout.connect(
+        lambda: set_mesh_opacity(pending_opacity_value["value"])
+    )
 
     def export_image():
         file_path, _ = QFileDialog.getSaveFileName(
@@ -2169,20 +2123,19 @@ def _build_qt_window(fig, window_title):
             control_meta.get("bbox_indices", []),
         )
     )
-    def on_opacity_changed(value):
-        opacity_value = value / 100.0
-        opacity_label.setText(f"Mesh Opacity: {opacity_value:.2f}")
-        pending_opacity_value["value"] = opacity_value
-        if not opacity_update_timer.isActive():
-            opacity_update_timer.start()
-
-    def on_opacity_released():
-        opacity_update_timer.stop()
-        set_mesh_opacity(opacity_slider.value() / 100.0)
-        last_applied_opacity_value["value"] = opacity_slider.value() / 100.0
-
-    opacity_slider.valueChanged.connect(on_opacity_changed)
-    opacity_slider.sliderReleased.connect(on_opacity_released)
+    opacity_slider.valueChanged.connect(
+        lambda value: (
+            opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}"),
+            pending_opacity_value.__setitem__("value", value / 100.0),
+            opacity_update_timer.start(),
+        )
+    )
+    opacity_slider.sliderReleased.connect(
+        lambda: (
+            opacity_update_timer.stop(),
+            set_mesh_opacity(opacity_slider.value() / 100.0),
+        )
+    )
     view.loadFinished.connect(on_load_finished)
     export_button.clicked.connect(export_image)
     window.destroyed.connect(cleanup)

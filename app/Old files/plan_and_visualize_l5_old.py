@@ -1,5 +1,10 @@
 import concurrent.futures
+import sys
 from pathlib import Path
+
+APP_ROOT = Path(__file__).resolve().parent.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
 # Top-level function for multiprocessing
 def angle_eval(args):
@@ -110,12 +115,12 @@ import numpy as np
 # ---------------------------------------------------------------------------
 #  Imports from the existing codebase (NOT modified)
 # ---------------------------------------------------------------------------
-from visualizer import visualize_surgical_plan
+from app.visualizer import visualize_surgical_plan
 
 # Reuse the battle-tested pedicle localization utilities from the codebase.
 # These use distance transforms, PCA, and anatomical filtering — far more
 # accurate than naive mesh-centroid heuristics.
-from analytical_geometry import (
+from app.analytical_geometry import (
     loadNifti,
     getValidLabels,
     computeStableFrame,
@@ -127,7 +132,7 @@ from analytical_geometry import (
 )
 
 
-def build_mesh_from_single_vertebra(segmented_file=None, data=None, affine=None, mask_name="vertebra"):
+def build_mesh_from_single_vertebra(segmented_file):
     """
     Build a mesh from a single vertebra .nii file (same as
     plan_and_visualize_geometry.py — duplicated here to stay self-contained
@@ -136,129 +141,16 @@ def build_mesh_from_single_vertebra(segmented_file=None, data=None, affine=None,
     import nibabel as nib
     from skimage.measure import marching_cubes
 
-    if data is None:
-        if segmented_file is None:
-            raise ValueError("Either segmented_file or data/affine must be provided.")
-        print(f"[Mesh] Loading segmentation: {segmented_file}")
-        nii = nib.load(segmented_file)
-        data = nii.get_fdata()
-        affine = nii.affine
+    print(f"[Mesh] Loading segmentation: {segmented_file}")
+    nii = nib.load(segmented_file)
+    data = nii.get_fdata()
+    affine = nii.affine
+    print(f"[Mesh] Volume shape: {data.shape}, voxel count: {int(np.sum(data > 0))}")
 
-    if affine is None:
-        raise ValueError("Affine is required when mesh data is provided directly.")
-
-    binary_mask = np.asarray(data) > 0
-    voxel_count = int(np.count_nonzero(binary_mask))
-    print(f"[Mesh] Volume shape: {binary_mask.shape}, voxel count: {voxel_count}")
-
-    if voxel_count == 0:
-        raise ValueError(
-            f"[Mesh] Cannot build a mesh for {mask_name}: the segmentation mask is empty."
-        )
-
-    verts, faces, _, _ = marching_cubes(binary_mask.astype(np.uint8), level=0.5)
+    verts, faces, _, _ = marching_cubes(data, level=0.5)
     vertsWorld = nib.affines.apply_affine(affine, verts)
     print(f"[Mesh] Mesh built: {len(verts)} vertices, {len(faces)} faces")
     return vertsWorld, faces
-
-
-def _full_spine_candidate_paths(segmented_file):
-    """Return likely companion L1-L5 segmentation files for an L5-only input."""
-    source_path = Path(segmented_file)
-    candidates = []
-
-    filename = source_path.name
-    if "_segmented_vertebrae_L5" in filename:
-        candidates.append(source_path.with_name(filename.replace(
-            "_segmented_vertebrae_L5",
-            "_segmented_vertebrae_L1_vertebrae_L5",
-        )))
-
-    prefix, marker, _ = filename.partition("_segmented_vertebrae_")
-    if marker:
-        candidates.extend(
-            sorted(
-                source_path.parent.glob(f"{prefix}_segmented_vertebrae_L1_vertebrae_L5.nii*")
-            )
-        )
-
-    unique_candidates = []
-    seen = set()
-    source_resolved = source_path.resolve()
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        if resolved == source_resolved or resolved in seen:
-            continue
-        seen.add(resolved)
-        unique_candidates.append(candidate)
-
-    return unique_candidates
-
-
-def _resolve_visualization_mask(segmented_file, seg, affine):
-    """
-    Choose the visualization mask source.
-    Planning always uses the original L5 segmentation; visualization prefers
-    the full L1-L5 mask when it is already present or when a companion file exists.
-    """
-    nonzero_labels = np.unique(seg[seg > 0])
-    if nonzero_labels.size > 1:
-        print("[Runner] Visualization source: current file already contains multiple vertebra labels.")
-        return segmented_file, seg > 0, affine
-
-    for candidate in _full_spine_candidate_paths(segmented_file):
-        if not candidate.exists():
-            continue
-        print(f"[Runner] Visualization source: using companion full-spine mask: {candidate}")
-        vis_seg, _, vis_affine = loadNifti(str(candidate))
-        return str(candidate), vis_seg > 0, vis_affine
-
-    print("[Runner] Visualization source: no companion full-spine mask found. Falling back to L5-only mask.")
-    return segmented_file, seg > 0, affine
-
-
-def _crop_planning_mask(mask, affine, spacing, padding_mm=80.0, min_padding_voxels=8):
-    """
-    Crop the L5 planning mask to a padded bounding box.
-
-    The mask is reduced to speed up distance transform / PCA / raycasting,
-    while the affine is shifted so world coordinates remain unchanged.
-    """
-    import nibabel as nib
-
-    mask = np.asarray(mask, dtype=bool)
-    if not np.any(mask):
-        return mask, affine
-
-    coords = np.argwhere(mask)
-    min_idx = coords.min(axis=0)
-    max_idx = coords.max(axis=0)
-
-    spacing_xyz = np.asarray(spacing[:3], dtype=float)
-    spacing_xyz = np.where(spacing_xyz > 0, spacing_xyz, 1.0)
-    padding_vox = np.maximum(
-        np.ceil(float(padding_mm) / spacing_xyz).astype(int),
-        int(min_padding_voxels),
-    )
-
-    start = np.maximum(min_idx - padding_vox, 0)
-    stop = np.minimum(max_idx + padding_vox + 1, np.asarray(mask.shape, dtype=int))
-
-    slices = tuple(slice(int(start[i]), int(stop[i])) for i in range(3))
-    cropped_mask = mask[slices]
-
-    cropped_affine = np.array(affine, dtype=float, copy=True)
-    cropped_affine[:3, 3] = nib.affines.apply_affine(affine, start)
-
-    print(
-        "[Runner] Planning crop: "
-        f"shape {tuple(mask.shape)} -> {tuple(cropped_mask.shape)}, "
-        f"pad={padding_mm:.1f}mm"
-    )
-    return cropped_mask, cropped_affine
 
 
 def measure_pedicle_dimensions(center, axes, dist, mask, affine):
@@ -405,10 +297,6 @@ def plan_and_visualize_l5():
     Main orchestration: read source, build mesh, locate pedicles from the
     segmentation, plan screws, visualize.
     """
-    import time
-    global start_time
-    if 'start_time' not in globals():
-        start_time = time.time()
     from l5_trajectory_planner import (
         plan_l5_pedicle_screw,
         compute_trajectory,
@@ -432,92 +320,27 @@ def plan_and_visualize_l5():
         print(f"[Runner] ERROR: segmented file does not exist: {segmented_file}")
         sys.exit(1)
 
+    # --- Build mesh for visualization ---
+    vertsWorld, faces = build_mesh_from_single_vertebra(segmented_file)
+
     # --- Load segmentation for anatomical analysis ---
     print("[Runner] Loading segmentation for pedicle localization...")
-    t_start = time.perf_counter()
     seg, spacing, affine = loadNifti(segmented_file)
-    elapsed_load = time.perf_counter() - t_start
-    print(f"[Timer] Segmentation load completed in {elapsed_load:.2f}s")
-    
-    # OPTIMIZATION: For L1-L5 files, extract ONLY L5 (label=1) to avoid
-    # expensive connected component analysis on 5 vertebrae when we only need 1.
-    # This can speed up loading from ~60+ seconds to ~5-20 seconds!
-    L5_LABEL = 1  # According to labelMap: {5: "L1", 4: "L2", 3: "L3", 2: "L4", 1: "L5"}
-    if L5_LABEL in np.unique(seg):
-        print(f"[Runner] L5-specific extraction: Isolating L5 (label={L5_LABEL}) from multi-level segmentation")
-        t_start = time.perf_counter()
-        mask_l5_only = seg == L5_LABEL
-        from scipy.ndimage import label as cc_label
-        labeled, _ = cc_label(mask_l5_only)
-        sizes = np.bincount(labeled.ravel())
-        sizes[0] = 0
-        if len(sizes) > 0:
-            largest = np.argmax(sizes)
-            mask = labeled == largest
-            labelVal = L5_LABEL
-            elapsed_extract = time.perf_counter() - t_start
-            print(f"[Timer] L5 extraction completed in {elapsed_extract:.2f}s")
-            print(f"[Runner] Extracted L5: {np.count_nonzero(mask)} voxels")
-        else:
-            # Fallback if extraction fails
-            validSegments = getValidLabels(seg)
-            if not validSegments:
-                print("[Runner] ERROR: No valid L5 segment found!")
-                sys.exit(1)
-            labelVal, mask = validSegments[0]
-    else:
-        # No L5 label found, use old method (single L5 file)
-        print("[Runner] L5-only file detected. Processing single segment...")
-        validSegments = getValidLabels(seg)
-        if not validSegments:
-            nonzero_voxels = int(np.count_nonzero(seg))
-            print(
-                "[Runner] ERROR: No valid vertebra segments found in the segmentation "
-                f"(non-zero voxels: {nonzero_voxels})."
-            )
-            sys.exit(1)
-        labelVal, mask = validSegments[0]
-    
+    validSegments = getValidLabels(seg)
+
+    if len(validSegments) == 0:
+        print("[Runner] ERROR: No valid vertebra segments found!")
+        sys.exit(1)
+
+    # Use the first (and usually only) segment
+    labelVal, mask = validSegments[0]
     name = labelMap.get(labelVal, str(labelVal))
     print(f"[Runner] Found segment: label={labelVal} → {name}")
 
-    # --- Build visualization mesh ---
-    # Planning stays L5-only; visualization can use the full L1-L5 mask when available.
-    print("[Runner] Resolving visualization mask...")
-    vis_volume_path, vis_mask, vis_affine = _resolve_visualization_mask(
-        segmented_file,
-        seg,
-        affine,
-    )
-    print("[Runner] Building visualization mesh...")
-    try:
-        vertsWorld, faces = build_mesh_from_single_vertebra(
-            segmented_file=vis_volume_path,
-            data=vis_mask,
-            affine=vis_affine,
-            mask_name=f"VisualizationMask-{name}",
-        )
-    except ValueError as exc:
-        print(f"[Runner] ERROR: {exc}")
-        sys.exit(1)
-
-    # --- Crop the planning volume only ---
-    # This keeps all analytical steps on a much smaller grid without changing world coordinates.
-    mask, affine = _crop_planning_mask(mask, affine, spacing, padding_mm=80.0)
-
     # --- Compute robust L5 anatomical frame ---
-    from analytical_geometry import computeStableFrameL5
-    import time
-    print("[Runner] Computing distance transform... (time-consuming on large volumes)")
-    t_start = time.perf_counter()
+    from app.analytical_geometry import computeStableFrameL5
     dist = computeDistance(mask, spacing)
-    elapsed_dist = time.perf_counter() - t_start
-    print(f"[Timer] Distance transform completed in {elapsed_dist:.2f}s")
-    
-    t_start = time.perf_counter()
     centroid, axes = computeStableFrameL5(mask, affine, dist)
-    elapsed_frame = time.perf_counter() - t_start
-    print(f"[Timer] Stable frame computation completed in {elapsed_frame:.2f}s")
     siAxis, lrAxis, apAxis = axes
     print(f"[Runner] Centroid (L5 robust) = {np.round(centroid, 2)}")
     print(f"[Runner] SI axis  = {np.round(siAxis, 4)}")
@@ -526,16 +349,13 @@ def plan_and_visualize_l5():
     maskFloat = mask.astype(np.float32)
 
     # --- Find the true robust Anterior Target (Vertebral Body Center) ---
-    from analytical_geometry import getL5VertebralBodyCenter
+    from app.analytical_geometry import getL5VertebralBodyCenter
     anterior_center = getL5VertebralBodyCenter(mask, axes, centroid, affine)
     print(f"[Runner] Anterior body center (L5 robust) = {np.round(anterior_center, 2)}")
 
     # --- Find anatomically correct pedicle centers ---
     print("[Runner] Locating pedicle centers (L5-specific filters)...")
-    t_start = time.perf_counter()
     lData, rData = pedicleCentersL5(mask, dist, centroid, axes, affine)
-    elapsed_pedicles = time.perf_counter() - t_start
-    print(f"[Timer] Pedicle center location completed in {elapsed_pedicles:.2f}s")
 
     if lData is None or rData is None:
         print("[Runner] ERROR: Could not locate one or both pedicle centers!")
@@ -548,20 +368,11 @@ def plan_and_visualize_l5():
 
     # --- Measure actual pedicle dimensions from the segmentation ---
     print("[Runner] Measuring left pedicle dimensions...")
-    t_start = time.perf_counter()
     lWidth, lHeight = measure_pedicle_dimensions(lCenter, axes, dist, mask, affine)
-    elapsed_lmeas = time.perf_counter() - t_start
-    print(f"[Timer] Left pedicle measurement completed in {elapsed_lmeas:.2f}s")
-    
     print("[Runner] Measuring right pedicle dimensions...")
-    t_start = time.perf_counter()
     rWidth, rHeight = measure_pedicle_dimensions(rCenter, axes, dist, mask, affine)
-    elapsed_rmeas = time.perf_counter() - t_start
-    print(f"[Timer] Right pedicle measurement completed in {elapsed_rmeas:.2f}s")
 
     # --- Plan screws using the deterministic trajectory planner ---
-    print("[Runner] Starting trajectory planning for both pedicles...")
-    t_start = time.perf_counter()
     resultsList = []
 
     # Calculate lateral distances to determine true pedicle vs. transverse process
@@ -591,7 +402,7 @@ def plan_and_visualize_l5():
     print(f"[Runner] Final Left center  = {np.round(final_lCenter, 2)}")
     print(f"[Runner] Final Right center = {np.round(final_rCenter, 2)}")
 
-    from analytical_geometry import cylinder_safe
+    from app.analytical_geometry import cylinder_safe
 
     for side, true_center, p_width, p_height in [
         ("left", final_lCenter, lWidth, lHeight),
@@ -649,17 +460,14 @@ def plan_and_visualize_l5():
             "vertebra": "L5",
             "side": side.capitalize(),
             "entry": best_entry,
-            "tip": tip,
-            "diameter": screw_diam,
-            "length": screw_length,
+            "tip": tip
         })
         
         print(f"[Runner] {side.capitalize()} Entry: {np.round(best_entry, 2)}")
         print(f"[Runner] {side.capitalize()} Trajectory Tip: {np.round(tip, 2)}")
         print(f"[Runner] {side.capitalize()} Bone Length: {best_bone_length:.2f} mm (actual), {screw_length:.2f} mm (used)")
 
-    elapsed_traj = time.perf_counter() - t_start
-    print(f"[Timer] Trajectory planning completed in {elapsed_traj:.2f}s")
+
 
     # --- Visualize anterior center as a marker for debug ---
     import plotly.graph_objects as go

@@ -96,10 +96,71 @@ def build_parser():
 
 def build_visualizer_adapter(args, unified_visualize):
     def patched_visualizer(verts_world, faces, results_list, volume_path=None):
+        import inspect
+        
+        mask_meshes = None
+        vis_volume_path = volume_path
+        try:
+            caller_frame = inspect.currentframe().f_back
+            local_vis = caller_frame.f_locals.get("vis_volume_path")
+            if local_vis:
+                vis_volume_path = local_vis
+        except Exception:
+            pass
+            
+        if vis_volume_path:
+            try:
+                import numpy as np
+                import nibabel as nib
+                from skimage.measure import marching_cubes
+                
+                nii = nib.load(vis_volume_path)
+                data = np.asanyarray(nii.dataobj)
+                affine = nii.affine
+                
+                labels = [value for value in np.unique(data) if value > 0]
+                if len(labels) > 0:
+                    mask_meshes = []
+                    label_map = {5: "L1", 4: "L2", 3: "L3", 2: "L4", 1: "L5"}
+                    for label_val in sorted(labels, reverse=True):
+                        mask = np.isclose(data, label_val)
+                        if not mask.any(): continue
+                        coords = np.argwhere(mask)
+                        if coords.size == 0: continue
+                        mins = np.maximum(coords.min(axis=0) - 2, 0)
+                        maxs = np.minimum(coords.max(axis=0) + 3, np.array(mask.shape, dtype=int))
+                        slices = tuple(slice(int(lo), int(hi)) for lo, hi in zip(mins, maxs))
+                        cropped = np.asarray(mask[slices], dtype=np.uint8)
+                        
+                        if np.any(cropped):
+                            try:
+                                v, f, _, _ = marching_cubes(cropped, level=0.5)
+                            except Exception:
+                                continue
+                            c_aff = np.array(affine, dtype=float, copy=True)
+                            c_aff[:3, 3] = nib.affines.apply_affine(affine, mins)
+                            v_world = nib.affines.apply_affine(c_aff, v)
+                            
+                            lbl_int = int(round(float(label_val)))
+                            mask_meshes.append({
+                                "label": label_map.get(lbl_int, f"Label {lbl_int}"),
+                                "value": float(label_val),
+                                "verts_world": v_world,
+                                "faces": f,
+                                "visible": True
+                            })
+                    
+                    if mask_meshes:
+                        verts_world = None
+                        faces = None
+            except Exception as e:
+                print(f"[Unified Setup] Note: separate mask_meshes optional build failed: {e}")
+
         fig, show_figure = unified_visualize(
             verts_world,
             faces,
             results_list,
+            mask_meshes=mask_meshes,
             volume_path=volume_path,
             screw_mode=args.screw_mode,
             theme=args.theme,

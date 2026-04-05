@@ -3,10 +3,8 @@ import json
 import os
 import sys
 import tempfile
-import threading
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from queue import Empty
-from multiprocessing import Manager
 
 import nibabel as nib
 import numpy as np
@@ -28,21 +26,27 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSizePolicy,
     QScrollArea,
-    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+try:
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+except ImportError:  # pragma: no cover - keep a clear failure path for viewer-only usage.
+    QWebEnginePage = None
+
+try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+except ImportError:  # pragma: no cover - required for the viewer, but keep the message clear.
+    QWebEngineView = None
+from skimage.measure import marching_cubes
+
 QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
-APP_ROOT = Path(__file__).resolve().parent.parent
-if str(APP_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_ROOT))
-
-from app.geometry_n import run_planner
-from app.visualizer_unified import (
+from geometry_n import run_planner
+from visualizer_unified import (
     _ensure_plotly_imports,
     _ensure_plotlyjs_bundle,
     _figure_without_embedded_controls,
@@ -63,36 +67,33 @@ class PlanningWorker(QThread):
         self._seg_path = seg_path
 
     def run(self):
-        manager = Manager()
-        log_queue = manager.Queue()
-        stop_event = threading.Event()
+        class _ConsoleStream:
+            def __init__(self, emit):
+                self._emit = emit
+                self._buffer = ""
 
-        def _drain_logs():
-            while not stop_event.is_set():
-                try:
-                    message = log_queue.get(timeout=0.1)
-                except Empty:
-                    continue
-                self.log.emit(str(message))
+            def write(self, text):
+                if not text:
+                    return 0
+                self._buffer += text
+                while "\n" in self._buffer:
+                    line, self._buffer = self._buffer.split("\n", 1)
+                    self._emit(line)
+                return len(text)
 
-            while True:
-                try:
-                    message = log_queue.get_nowait()
-                except Empty:
-                    break
-                self.log.emit(str(message))
+            def flush(self):
+                if self._buffer:
+                    self._emit(self._buffer)
+                    self._buffer = ""
 
-        log_thread = threading.Thread(target=_drain_logs, daemon=True)
-        log_thread.start()
         try:
-            results = run_planner(self._seg_path, log_queue=log_queue)
+            stream = _ConsoleStream(self.log.emit)
+            with redirect_stdout(stream), redirect_stderr(stream):
+                results = run_planner(self._seg_path)
+            stream.flush()
         except Exception as exc:  # pragma: no cover - defensive UI boundary
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
-        finally:
-            stop_event.set()
-            log_thread.join(timeout=2.0)
-            manager.shutdown()
         self.results_ready.emit(results)
 
 
@@ -438,8 +439,6 @@ def _mask_label_name(label_value):
 
 
 def _build_mask_meshes(seg_path):
-    from skimage.measure import marching_cubes
-
     data, _, affine = run_nifti_load(seg_path)
     labels = [value for value in np.unique(data) if value > 0]
     if not labels:
@@ -756,23 +755,16 @@ class GeometryPlanningWindow(QMainWindow):
         self._scene_meta = {}
         self._view_ready = False
         self._pending_mesh_opacity = None
-        self._last_applied_mesh_opacity = None
         self._show_hover_coordinates = False
         self._mask_visibility = {}
         self._scene_camera = None
         self._mask_worker = None
         self._pending_mask_path = None
         self._last_directory = os.path.expanduser("~/Downloads")
-        self.view = None
-        self._viewer_stack = None
-        self._viewer_placeholder = None
-        self._opacity_update_timer = QTimer(self)
-        self._opacity_update_timer.setSingleShot(True)
-        self._opacity_update_timer.setInterval(24)
-        self._opacity_update_timer.timeout.connect(self._flush_mesh_opacity)
 
         self.setWindowTitle("Pedicle Screw Planner Visualization")
         self._build_ui()
+        self._render_blank_view()
         self._set_loaded_state(False)
 
     def _build_ui(self):
@@ -782,23 +774,26 @@ class GeometryPlanningWindow(QMainWindow):
         root_layout.setSpacing(0)
         container.setStyleSheet("background-color: #0B1320;")
 
+        if QWebEngineView is None:
+            raise RuntimeError("PyQt6.QtWebEngineWidgets is required to display the unified viewer.")
+
+        if QWebEnginePage is not None:
+            class _ConsolePage(QWebEnginePage):
+                def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):  # type: ignore[override]
+                    print(str(message))
+                    super().javaScriptConsoleMessage(level, message, lineNumber, sourceID)
+        else:
+            _ConsolePage = None
+
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
-        self._viewer_stack = QStackedWidget()
-        self._viewer_placeholder = QWidget()
-        placeholder_layout = QVBoxLayout(self._viewer_placeholder)
-        placeholder_layout.setContentsMargins(0, 0, 0, 0)
-        placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder_label = QLabel("Load a segmentation mask to start planning.")
-        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder_label.setStyleSheet(
-            "color: #CBD5E1; font-size: 18px; font-weight: 600; letter-spacing: 0.2px;"
-        )
-        placeholder_layout.addWidget(placeholder_label)
-        self._viewer_stack.addWidget(self._viewer_placeholder)
-        content_layout.addWidget(self._viewer_stack, 1)
+
+        self.view = QWebEngineView()
+        if _ConsolePage is not None:
+            self.view.setPage(_ConsolePage(self.view))
+        content_layout.addWidget(self.view, 1)
 
         controls_panel = QWidget()
         controls_panel.setStyleSheet(
@@ -978,7 +973,6 @@ class GeometryPlanningWindow(QMainWindow):
         self.show_bbox_button.clicked.connect(lambda: self._set_bbox_visibility(True))
         self.hide_bbox_button.clicked.connect(lambda: self._set_bbox_visibility(False))
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        self.opacity_slider.sliderReleased.connect(self._flush_mesh_opacity)
         self.hover_coords_button.clicked.connect(self._toggle_hover_coordinates)
         self.console_button.clicked.connect(self._toggle_planning_console)
         self.export_button.clicked.connect(self._export_image)
@@ -996,6 +990,7 @@ class GeometryPlanningWindow(QMainWindow):
         self._loading_overlay = LoadingOverlay(container)
         self._loading_overlay.hide()
         self._loading_overlay.raise_()
+        self.view.loadFinished.connect(self._on_view_load_finished)
         self.resize(1320, 940)
 
     def _set_loaded_state(self, loaded):
@@ -1045,13 +1040,13 @@ class GeometryPlanningWindow(QMainWindow):
         self._current_display_mode = "max_diameter"
         self.show_screws_button.setChecked(True)
         self.show_traj_button.setChecked(False)
-        self._apply_scene_visibility_state()
+        self._capture_view_state(self._apply_scene_visibility_state)
 
     def _set_trajectory_mode(self):
         self._current_display_mode = "trajectories"
         self.show_screws_button.setChecked(False)
         self.show_traj_button.setChecked(True)
-        self._apply_scene_visibility_state()
+        self._capture_view_state(self._apply_scene_visibility_state)
 
     def _set_bbox_visibility(self, visible):
         self._current_bbox_visible = visible
@@ -1059,7 +1054,7 @@ class GeometryPlanningWindow(QMainWindow):
             self.show_bbox_button.setChecked(True)
         else:
             self.hide_bbox_button.setChecked(True)
-        self._apply_scene_visibility_state()
+        self._capture_view_state(self._apply_scene_visibility_state)
 
     def _toggle_hover_coordinates(self):
         self._show_hover_coordinates = self.hover_coords_button.isChecked()
@@ -1105,14 +1100,8 @@ class GeometryPlanningWindow(QMainWindow):
         self.view.page().runJavaScript(script, _on_result)
 
     def _on_opacity_changed(self, value):
-        opacity_value = value / 100.0
-        self.opacity_label.setText(f"Mesh Opacity: {opacity_value:.2f}")
-        self._pending_mesh_opacity = opacity_value
-        if self._current_mask_meshes is None:
-            return
-
-        if not self._opacity_update_timer.isActive():
-            self._opacity_update_timer.start()
+        self.opacity_label.setText(f"Mesh Opacity: {value / 100.0:.2f}")
+        self._apply_mesh_opacity(value / 100.0)
 
     def _render_scene_delayed(self):
         QTimer.singleShot(0, self._render_scene)
@@ -1133,46 +1122,6 @@ class GeometryPlanningWindow(QMainWindow):
         if self._planning_console is None:
             self._planning_console = PlanningConsole(self)
         return self._planning_console
-
-    def _ensure_view(self):
-        if self.view is not None:
-            return self.view
-
-        try:
-            from PyQt6.QtWebEngineCore import QWebEnginePage
-            from PyQt6.QtWebEngineWidgets import QWebEngineView
-        except ImportError as exc:  # pragma: no cover - viewer dependency boundary
-            raise RuntimeError("PyQt6.QtWebEngineWidgets is required to display the unified viewer.") from exc
-
-        window = self
-
-        class _ConsolePage(QWebEnginePage):
-            def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):  # type: ignore[override]
-                console = getattr(window, "_planning_console", None)
-                if console is not None:
-                    console.append_text(str(message))
-                    return
-
-        self.view = QWebEngineView()
-        self.view.setPage(_ConsolePage(self.view))
-        self.view.loadFinished.connect(self._on_view_load_finished)
-        self._viewer_stack.addWidget(self.view)
-        self._viewer_stack.setCurrentWidget(self.view)
-        return self.view
-
-    def _flush_mesh_opacity(self):
-        if self._pending_mesh_opacity is None or self._current_mask_meshes is None:
-            self._opacity_update_timer.stop()
-            return
-
-        if self._view_ready and self._pending_mesh_opacity != self._last_applied_mesh_opacity:
-            self._apply_mesh_opacity(self._pending_mesh_opacity)
-            self._last_applied_mesh_opacity = self._pending_mesh_opacity
-
-        if self.opacity_slider.isSliderDown() and self._pending_mesh_opacity != self._last_applied_mesh_opacity:
-            self._opacity_update_timer.start()
-        else:
-            self._opacity_update_timer.stop()
 
     def _apply_mesh_opacity(self, opacity_value):
         if self._current_mask_meshes is None:
@@ -1204,21 +1153,7 @@ class GeometryPlanningWindow(QMainWindow):
             (function() {{
                 const plot = document.querySelector('.js-plotly-plot');
                 if (!plot || !window.Plotly) return;
-                const camera = window.__plotlyCamera || (plot.layout && plot.layout.scene && plot.layout.scene.camera ? JSON.parse(JSON.stringify(plot.layout.scene.camera)) : null);
-                const result = Plotly.restyle(plot, {json.dumps(payload)}, {json.dumps(indices)});
-                const restoreCamera = function() {{
-                    if (!camera) return;
-                    Plotly.relayout(plot, {{'scene.camera': camera}});
-                }};
-                if (result && typeof result.then === 'function') {{
-                    result.then(function() {{
-                        setTimeout(restoreCamera, 0);
-                    }}).catch(function() {{
-                        restoreCamera();
-                    }});
-                }} else {{
-                    setTimeout(restoreCamera, 0);
-                }}
+                Plotly.restyle(plot, {json.dumps(payload)}, {json.dumps(indices)});
             }})();
             """
         )
@@ -1268,11 +1203,6 @@ class GeometryPlanningWindow(QMainWindow):
     def _on_view_load_finished(self, ok):
         self._view_ready = bool(ok)
         if ok:
-            if self._pending_mesh_opacity is not None:
-                self._apply_mesh_opacity(self._pending_mesh_opacity)
-                self._last_applied_mesh_opacity = self._pending_mesh_opacity
-            if self.opacity_slider.isSliderDown():
-                self._opacity_update_timer.start()
             QTimer.singleShot(120, self._clear_loading_state)
         else:
             self._clear_loading_state()
@@ -1317,7 +1247,6 @@ class GeometryPlanningWindow(QMainWindow):
         )
 
     def _load_html(self, html_document):
-        self._ensure_view()
         if self._current_html_path and os.path.exists(self._current_html_path):
             try:
                 os.remove(self._current_html_path)
@@ -1332,15 +1261,13 @@ class GeometryPlanningWindow(QMainWindow):
         self.view.load(QUrl.fromLocalFile(self._current_html_path))
 
     def _render_blank_view(self):
-        if self._viewer_stack is not None:
-            self._viewer_stack.setCurrentWidget(self._viewer_placeholder)
+        self._load_html(_blank_html("#0B1320"))
 
     def _render_scene(self):
         if self._current_mask_meshes is None:
             self._render_blank_view()
             return
 
-        self._ensure_view()
         self._view_ready = False
         figure = self._build_scene_figure()
         scene_meta = getattr(figure.layout, "meta", None) or {}
@@ -1593,6 +1520,7 @@ def main():
     window.show()
 
     if owns_app:
+        print("[PyQt6] Starting event loop...")
         sys.exit(app.exec())
 
 

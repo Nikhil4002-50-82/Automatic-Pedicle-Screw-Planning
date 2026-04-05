@@ -1,6 +1,13 @@
 import os
-from geometry import run_planner
-from visualizer import visualize_surgical_plan
+import sys
+from pathlib import Path
+
+APP_ROOT = Path(__file__).resolve().parent.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+from app.geometry import run_planner
+from app.visualizer import visualize_surgical_plan
 
 def plan_and_visualize_geometry():
     """

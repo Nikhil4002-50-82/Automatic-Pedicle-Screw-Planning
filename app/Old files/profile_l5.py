@@ -10,8 +10,9 @@ import os
 import numpy as np
 from pathlib import Path
 
-# Add app directory to path
-sys.path.insert(0, os.path.dirname(__file__))
+APP_ROOT = Path(__file__).resolve().parent.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
 def profile_step(name, func, *args, **kwargs):
     """Wrap a function call with timing."""
@@ -24,7 +25,7 @@ def profile_step(name, func, *args, **kwargs):
 
 def profile_l5_pipeline(segmented_file):
     """Profile each step of the L5 planning pipeline."""
-    from analytical_geometry import (
+    from app.analytical_geometry import (
         loadNifti,
         getValidLabels,
         computeStableFrameL5,

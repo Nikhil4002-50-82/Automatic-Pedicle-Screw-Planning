@@ -2,12 +2,17 @@ import sys
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 
 # 🔥 CRITICAL: Must come BEFORE any QApplication usage
 from PyQt6.QtCore import Qt
 from PyQt6 import QtCore
 
 QtCore.QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+
+APP_ROOT = Path(__file__).resolve().parent.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
 # 🔥 Force WebEngine initialization early
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -23,8 +28,8 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QPixmap, QColor
 
 # Importing your existing modules (Unchanged)
-from geometry import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
-from visualizerV5 import visualize_surgical_plan
+from app.geometry import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from app.visualizerV5 import visualize_surgical_plan
 
 import nibabel as nib
 import numpy as np

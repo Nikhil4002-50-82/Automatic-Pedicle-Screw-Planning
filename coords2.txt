@@ -1,0 +1,55 @@
+PS C:\Users\heman\OneDrive\Documents\GitHub\Automatic-Pedicle-Screw-Planning> python app/geometry.py
+[TIMING] Starting lumbar screw planning pipeline...
+[INFO] System cores: 24
+[TIMING] loadNifti: 1.252s (shape: (512, 512, 1214))
+[TIMING] getValidLabels: 81.218s (5 segments)
+
+[INFO] Processing vertebrae sequentially (memory-safe mode)...
+
+[TIMING] Starting L1...
+[TIMING] [L1] computeStableFrame: 1.329s
+[TIMING] [L1] computeDistance: 148.391s
+[TIMING] [L1] pedicleCenters: 1.322s
+L1 Left: Diam 5.0mm, Axial 6.5°, Sagittal 0.0°
+L1 Right: Diam 6.0mm, Axial -5.0°, Sagittal 0.0°
+[TIMING] [L1] optimize (both sides): 0.124s
+[TIMING] [L1] TOTAL: 152.162s
+
+[TIMING] Starting L2...
+[TIMING] [L2] computeStableFrame: 1.454s
+[TIMING] [L2] computeDistance: 126.502s
+[TIMING] [L2] pedicleCenters: 1.023s
+L2 Left: Diam 5.0mm, Axial 5.0°, Sagittal -1.0°
+L2 Right: Diam 4.5mm, Axial -10.8°, Sagittal -1.0°
+[TIMING] [L2] optimize (both sides): 0.089s
+[TIMING] [L2] TOTAL: 129.953s
+
+[TIMING] Starting L3...
+[TIMING] [L3] computeStableFrame: 1.076s
+[TIMING] [L3] computeDistance: 140.231s
+[TIMING] [L3] pedicleCenters: 1.183s
+L3 Left: Diam 6.5mm, Axial 12.3°, Sagittal -3.0°
+L3 Right: Diam 6.5mm, Axial -13.8°, Sagittal -1.0°
+[TIMING] [L3] optimize (both sides): 0.142s
+[TIMING] [L3] TOTAL: 143.696s
+
+[TIMING] Starting L4...
+[TIMING] [L4] computeStableFrame: 1.154s
+[TIMING] [L4] computeDistance: 126.737s
+[TIMING] [L4] pedicleCenters: 1.110s
+L4 Left: Diam 5.0mm, Axial 16.7°, Sagittal 0.0°
+L4 Right: Diam 7.5mm, Axial -15.2°, Sagittal 0.0°
+[TIMING] [L4] optimize (both sides): 0.120s
+[TIMING] [L4] TOTAL: 130.107s
+
+[TIMING] Starting L5...
+[TIMING] [L5] computeStableFrame: 1.222s
+[TIMING] [L5] computeDistance: 133.347s
+[TIMING] [L5] pedicleCenters: 1.380s
+L5 Left: Diam 8.5mm, Axial 16.7°, Sagittal 0.0°
+L5 Right: Diam 7.5mm, Axial -18.1°, Sagittal 0.0°
+[TIMING] [L5] optimize (both sides): 0.130s
+[TIMING] [L5] TOTAL: 137.080s
+
+[TIMING] All vertebrae processing: 693.387s
+[TIMING] TOTAL pipeline execution: 776.103s
