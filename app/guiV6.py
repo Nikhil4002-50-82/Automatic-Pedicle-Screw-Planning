@@ -25,8 +25,8 @@ from PyQt6.QtGui import QFont, QPixmap, QColor
 # Importing your existing modules (Unchanged)
 from run_totalseg import run_totalseg
 from mesh_builder import build_vertebra_mesh
-from geometryV4 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
-from visualizerV5 import visualize_surgical_plan
+from geometryV5 import run_planner, loadNifti, getValidLabels, computeStableFrame, computeDistance, pedicleCenters, optimize
+from visualizerV4 import visualize_surgical_plan
 
 import nibabel as nib
 import numpy as np

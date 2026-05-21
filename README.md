@@ -1,181 +1,362 @@
-# Pedicle Screw Planning using CT Scans
+# Automatic Pedicle Screw Planning System
 
 ## Overview
 
-This project implements a geometry-based pedicle screw planning system for lumbar vertebrae using CT scan data.
+This project is a **geometry-based automatic pedicle screw planning system** for lumbar vertebrae (**L1–L5**) using CT-derived vertebra segmentation masks.
 
-The system automatically:
+The algorithm automatically:
 
-* Segments lumbar vertebrae (L1–L5)
-* Detects pedicle centers
-* Computes safe screw trajectories
-* Selects optimal screw diameter and length
-* Calculates safety margins
-* Generates a 3D surgical-style visualization
+* Detects valid vertebra segments
+* Computes a stable anatomical coordinate system
+* Finds approximate pedicle centers
+* Searches for safe screw trajectories
+* Evaluates screw safety using distance transforms
+* Selects clinically valid screw diameter and trajectory
+* Outputs final screw planning parameters
 
-The algorithm is fully automatic and works directly on 3D CT scan data (NIfTI format).
+The system is designed for:
 
-This project is intended for research.
+* Research
+* Surgical planning assistance
+* Pre-operative simulation
+* Educational visualization
+* AI + geometry hybrid workflows
 
-## Features
+# Pipeline Overview
 
-### Automatic Vertebra Segmentation
+The complete pipeline works as follows:
 
-Lumbar vertebrae (L1–L5) are segmented using:
-
-* **TotalSegmentator**
-
-Each vertebra is extracted separately and used for planning.
-
-### Automatic Pedicle Detection
-
-The system automatically finds:
-
-* Left pedicle center
-* Right pedicle center
-
-It selects the thickest bone region inside each pedicle.
-
-### Automatic Screw Planning
-
-For each vertebra (L1–L5), the algorithm:
-
-* Tests multiple screw diameters
-* Tests multiple directions
-* Computes screw length
-* Checks if screw stays inside bone
-* Calculates safety margin
-
-Then selects the best safe screw trajectory.
-
-### Safety Verification
-
-The planner ensures:
-
-* Screw cylinder remains inside bone
-* Minimum screw length requirement
-* Bone thickness is sufficient
-* Cortical breach is avoided
-
-Safety margin is calculated as:
-
-Safety Margin = Bone Thickness − Screw Radius
-
-### 3D Visualization
-
-The system produces a 3D surgical-style visualization showing:
-
-* Lumbar vertebrae surface
-* Pedicle screws
-* Entry points
-
-Visualization is generated using:
-
-* Plotly 3D rendering
-
-## Technologies Used
-
-### Programming Language
-
-* Python 3.10+
-
-### Libraries
-
-#### Medical Imaging
-
-* nibabel
-* TotalSegmentator
-
-#### Scientific Computing
-
-* numpy
-* scipy
-* scikit-learn
-
-#### 3D Processing
-
-* scikit-image
-
-#### Visualization
-
-* plotly
-
-## Project Pipeline
-
-### Step 1 — Input CT Scan
-
-Input must be a CT scan in **NIfTI format (.nii or .nii.gz)**.
-
-Example:
-
-```
-case_0000.nii
+```text
+CT Scan
+   ↓
+Vertebra Segmentation
+   ↓
+Connected Component Cleaning
+   ↓
+Stable Anatomical Frame Generation
+   ↓
+Pedicle Center Detection
+   ↓
+Entry Point Estimation
+   ↓
+Trajectory Optimization
+   ↓
+Safety Evaluation
+   ↓
+Final Screw Selection
 ```
 
-### Step 2 — Vertebra Segmentation
+# Main Features
 
-TotalSegmentator extracts:
+## Geometry-Based Planning
 
-* L1
-* L2
-* L3
-* L4
-* L5
+The system does not depend on deep learning for trajectory generation.
 
-Output example:
+Instead, it uses:
 
+* PCA-based anatomical alignment
+* Distance transform safety analysis
+* Geometric trajectory optimization
+* Clinical hardware constraints
+
+## Automatic Coordinate System Generation
+
+For every vertebra:
+
+* Superior–Inferior axis is computed
+* Left–Right axis is computed
+* Anterior–Posterior axis is computed
+
+This creates a stable local anatomical frame.
+
+## Safety-Based Screw Selection
+
+Each candidate trajectory is evaluated using:
+
+* Bone containment
+* Distance from cortex
+* Midline violation detection
+* Screw tilt penalty
+* Screw convergence angle
+* Clinical diameter limits
+* Clinical length limits
+
+## Clinical Constraints
+
+The algorithm follows lumbar-specific constraints:
+
+### Diameter Limits
+
+| Vertebra | Allowed Diameter (mm) |
+| -------- | --------------------- |
+| L1       | 4.5 – 6.0             |
+| L2       | 4.5 – 6.0             |
+| L3       | 5.0 – 6.5             |
+| L4       | 6.0 – 7.5             |
+| L5       | 6.5 – 8.5             |
+
+### Length Limits
+
+| Vertebra | Maximum Length (mm) |
+| -------- | ------------------- |
+| L1       | 45                  |
+| L2       | 50                  |
+| L3       | 50                  |
+| L4       | 55                  |
+| L5       | 60                  |
+
+# Core Algorithm
+
+## 1. Load NIfTI Segmentation
+
+The segmentation volume is loaded using:
+
+```python
+nibabel
 ```
-vertebrae_L1.nii.gz
-vertebrae_L2.nii.gz
-vertebrae_L3.nii.gz
-vertebrae_L4.nii.gz
-vertebrae_L5.nii.gz
+
+The system extracts:
+
+* Segmentation volume
+* Voxel spacing
+* Affine matrix
+
+## 2. Remove Invalid Components
+
+The algorithm:
+
+* Finds connected components
+* Keeps only the largest component
+* Removes small noisy regions
+
+Minimum voxel threshold:
+
+```python
+voxelThreshold = 5000
 ```
 
-### Step 3 — Coordinate System Estimation
+## 3. Build Anatomical Coordinate Frame
 
-The system automatically estimates vertebra orientation:
+The vertebra mask is converted into world coordinates.
+
+PCA is then applied to estimate:
 
 * Superior–Inferior axis
 * Left–Right axis
 * Anterior–Posterior axis
 
-This allows the planner to work on rotated spines.
+This gives a stable vertebra orientation.
 
-### Step 4 — Pedicle Center Detection
+## 4. Detect Pedicle Regions
 
-The algorithm:
+The algorithm searches near:
 
-1. Finds middle vertebra region
-2. Selects posterior region
-3. Splits left and right
-4. Chooses thickest bone region
+* Mid vertebral height
+* Posterior vertebral region
 
-### Step 5 — Screw Optimization
+The left and right pedicle regions are separated using the LR axis.
 
-The system:
+The point with maximum distance transform value is selected as the pedicle center.
 
-* Tests many directions
-* Tests many diameters
-* Computes safety margin
-* Computes screw length
+## 5. Estimate Screw Entry Point
 
-Best screw is selected automatically.
+Starting from the pedicle center:
 
-### Step 6 — Surface Mesh Generation
+* The algorithm moves posteriorly
+* Stops when exiting bone
+* Slightly offsets inward for safety
 
-Marching Cubes algorithm is used to generate a smooth 3D mesh of vertebrae.
+This produces the final entry point.
 
-### Step 7 — Visualization
+## 6. Trajectory Optimization
 
-Final output includes:
+Multiple candidate trajectories are generated by sweeping:
 
-* Vertebra surface
-* Screw cylinders
-* Entry points
+### Axial Angles
 
-## Important Notes
+```python
+5° → 40°
+```
 
-* Not intended for clinical use yet
-* Results depend on segmentation quality
-* CT scans must include lumbar vertebrae
+### Sagittal Angles
+
+```python
+-10° → 0°
+```
+
+For every trajectory:
+
+* Bone containment is checked
+* Distance transform safety is computed
+* Midline crossing is penalized
+* Clinical limits are applied
+
+## 7. Distance Transform Safety Analysis
+
+The algorithm uses:
+
+```python
+distance_transform_edt()
+```
+
+This computes the distance of every voxel from the cortical boundary.
+
+Larger values mean:
+
+* More surrounding bone
+* Safer screw placement
+
+## 8. Screw Diameter Selection
+
+The maximum safe diameter is estimated from:
+
+```python
+safeDiameter ≈ 2 × minimumDistanceToBoundary
+```
+
+The largest clinically valid diameter is selected.
+
+## 9. Final Scoring Function
+
+The final score combines:
+
+| Factor             | Purpose                         |
+| ------------------ | ------------------------------- |
+| Diameter           | Prefer larger screws            |
+| Convergence        | Encourage medial convergence    |
+| Distance Transform | Prefer safer bone corridors     |
+| Tilt Penalty       | Avoid excessive tilt            |
+| Midline Penalty    | Avoid crossing vertebral center |
+
+# Output
+
+The planner returns:
+
+```python
+[
+    {
+        "vertebra": "L4",
+        "side": "Left",
+        "entry": [x, y, z],
+        "tip": [x, y, z],
+        "diameter": 6.5,
+        "length": 48.2,
+        "axial_angle": 18.0,
+        "sagittal_angle": -4.0
+    }
+]
+```
+
+# Technologies Used
+
+| Library      | Purpose               |
+| ------------ | --------------------- |
+| NumPy        | Numerical operations  |
+| NiBabel      | Medical image loading |
+| SciPy        | Distance transforms   |
+| Scikit-Learn | PCA computation       |
+| PyQt6        | GUI application       |
+| VTK / Plotly | 3D visualization      |
+
+# Example Workflow
+
+## Step 1 — Load CT or Segmentation
+
+The GUI supports:
+
+* Raw CT scans
+* Pre-segmented vertebra masks
+
+## Step 2 — Generate Vertebra Mesh
+
+The vertebra surface mesh is generated using:
+
+```python
+marching_cubes()
+```
+
+## Step 3 — Run Planning
+
+The planner computes:
+
+* Screw entry point
+* Screw tip
+* Diameter
+* Length
+* Axial angle
+* Sagittal angle
+
+## Step 4 — Visualize
+
+The final surgical plan is displayed in 3D.
+
+# Advantages
+
+## Explainable
+
+The entire pipeline is interpretable.
+
+Every decision comes from:
+
+* Geometry
+* Safety analysis
+* Clinical rules
+
+## No Training Required
+
+The geometry planner works without:
+
+* Neural networks
+* Large datasets
+* GPU training
+
+## Modular
+
+Each stage is independent:
+
+* Segmentation
+* Coordinate system
+* Pedicle detection
+* Optimization
+* Visualization
+
+This makes experimentation easier.
+
+# Future Improvements
+
+Potential upgrades:
+
+* AI-based trajectory refinement
+* Reinforcement learning optimization
+* Atlas-based priors
+* Automatic breach correction
+* Multi-trajectory ranking
+* Post-op evaluation
+* S1 support
+* Cervical/thoracic extension
+
+# Running the Project
+
+## Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## Run GUI
+
+```bash
+python guiV6.py
+```
+
+# Research Notes
+
+This project combines:
+
+* Medical image processing
+* Computational geometry
+* Anatomical modeling
+* Surgical planning
+* Clinical constraints
+
+The focus is on creating a practical and interpretable planning system for pedicle screw trajectory generation.
