@@ -7,3 +7,7 @@ plotly
 PyQt6
 PyQt6-WebEngine
 matplotlib
+vtk
+pyvista
+pyvistaqt
+qtawesome
