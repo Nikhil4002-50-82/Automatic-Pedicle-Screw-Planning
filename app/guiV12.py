@@ -12,10 +12,11 @@ from skimage.measure import marching_cubes
 
 from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, Qt, QThread, QSize, QRectF, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -64,6 +65,309 @@ from geometryV5 import (
 from mesh_builder import build_vertebra_mesh
 from run_totalseg import run_totalseg
 from visualizerV7 import visualize_surgical_plan
+
+
+APP_TITLE = "Automatic Pedicle Screw Planning"
+APP_VERSION = "V12.0"
+SPLASH_WIDTH = 560
+SPLASH_HEIGHT = 280
+SPLASH_FILL = "#0b1220"
+SPLASH_BORDER = "#2dd4bf"
+SPLASH_TEXT = "#ffffff"
+SPLASH_TEXT_MUTED = "#e2e8f0"
+
+
+def loading_panel_stylesheet():
+    """In-app loader: dark panel only, no border (workspace stays visible around it)."""
+    return (
+        f"QFrame#LoadingSplashPanel {{"
+        f"  background-color: {SPLASH_FILL};"
+        f"  border: none;"
+        f"  border-radius: 8px;"
+        f"}}"
+        f"QLabel#LoadingAppLine {{"
+        f"  background: transparent; color: {SPLASH_TEXT};"
+        f"  font-size: 11px; font-weight: 800; letter-spacing: 0.4px;"
+        f"}}"
+        f"QLabel#LoadingTitle {{"
+        f"  background: transparent; color: {SPLASH_TEXT};"
+        f"  font-size: 20px; font-weight: 900;"
+        f"}}"
+        f"QLabel#LoadingMessage {{"
+        f"  background: transparent; color: {SPLASH_TEXT_MUTED};"
+        f"  font-size: 13px; font-weight: 600;"
+        f"}}"
+        f"QLabel#LoadingHint {{"
+        f"  background: transparent; color: {SPLASH_TEXT_MUTED};"
+        f"  font-size: 11px; font-weight: 600;"
+        f"}}"
+        f"QLabel#LoadingPercent {{"
+        f"  background: transparent; color: {SPLASH_TEXT};"
+        f"  font-size: 22px; font-weight: 900;"
+        f"}}"
+        f"QProgressBar#LoadingBar {{"
+        f"  background: #0f766e;"
+        f"  border: none;"
+        f"  border-radius: 6px;"
+        f"  min-height: 22px;"
+        f"  max-height: 22px;"
+        f"  color: {SPLASH_TEXT};"
+        f"  font-size: 14px;"
+        f"  font-weight: 900;"
+        f"  text-align: center;"
+        f"}}"
+        f"QProgressBar#LoadingBar::chunk {{"
+        f"  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f766e, stop:1 {SPLASH_BORDER});"
+        f"  border-radius: 6px;"
+        f"}}"
+    )
+
+
+class LoadingOverlay(QWidget):
+    """Centered loading panel over the workspace; background stays visible outside the panel."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("LoadingOverlayRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setVisible(False)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(1)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+
+        self.card = QFrame()
+        self.card.setObjectName("LoadingSplashPanel")
+        self.card.setFixedWidth(SPLASH_WIDTH)
+        self.card.setMinimumHeight(SPLASH_HEIGHT)
+        card_layout = QVBoxLayout(self.card)
+        card_layout.setContentsMargins(32, 28, 32, 26)
+        card_layout.setSpacing(12)
+
+        self.app_line = QLabel(APP_TITLE)
+        self.app_line.setObjectName("LoadingAppLine")
+        self.app_line.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.loading_title = QLabel("Working...")
+        self.loading_title.setObjectName("LoadingTitle")
+        self.loading_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.loading_message = QLabel("Please wait.")
+        self.loading_message.setObjectName("LoadingMessage")
+        self.loading_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_message.setWordWrap(True)
+
+        self.steps_host = QWidget()
+        self.steps_host.setStyleSheet("background: transparent;")
+        steps_layout = QVBoxLayout(self.steps_host)
+        steps_layout.setContentsMargins(0, 0, 0, 0)
+        steps_layout.setSpacing(4)
+        self.step_labels = []
+        self.step_texts = [
+            "Prepare data",
+            "Segmentation and mesh",
+            "Screw optimization",
+            "Finalize plan",
+        ]
+        for text in self.step_texts:
+            label = QLabel(f"○ {text}")
+            label.setObjectName("LoadingStep")
+            label.setStyleSheet(
+                f"background: transparent; color: {SPLASH_TEXT_MUTED}; font-size: 12px; font-weight: 700;"
+            )
+            self.step_labels.append(label)
+            steps_layout.addWidget(label)
+        self.steps_host.hide()
+
+        self.percent_label = QLabel("")
+        self.percent_label.setObjectName("LoadingPercent")
+        self.percent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.percent_label.hide()
+
+        self.loading_bar = QProgressBar()
+        self.loading_bar.setObjectName("LoadingBar")
+        self.loading_bar.setFixedHeight(22)
+        self.loading_bar.setMinimumWidth(SPLASH_WIDTH - 96)
+        self.loading_bar.setTextVisible(False)
+        self.set_indeterminate()
+
+        self.loading_hint = QLabel("See the Console tab for detailed progress.")
+        self.loading_hint.setObjectName("LoadingHint")
+        self.loading_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_hint.setWordWrap(True)
+
+        card_layout.addWidget(self.app_line)
+        card_layout.addWidget(self.loading_title)
+        card_layout.addWidget(self.loading_message)
+        card_layout.addWidget(self.steps_host)
+        card_layout.addWidget(self.percent_label)
+        card_layout.addWidget(self.loading_bar, 0, Qt.AlignmentFlag.AlignHCenter)
+        card_layout.addWidget(self.loading_hint)
+
+        row.addWidget(self.card)
+        row.addStretch(1)
+        outer.addLayout(row)
+        outer.addStretch(1)
+
+        self.setStyleSheet("QWidget#LoadingOverlayRoot { background: transparent; }")
+        self.card.setStyleSheet(loading_panel_stylesheet())
+
+    def reposition(self):
+        if self.parentWidget():
+            self.setGeometry(self.parentWidget().rect())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.reposition()
+
+    def set_indeterminate(self):
+        self.loading_bar.setRange(0, 0)
+        self.percent_label.setText("Loading...")
+        self.percent_label.show()
+
+    def set_progress(self, value, message=None):
+        self.loading_bar.setRange(0, 100)
+        clipped = int(np.clip(value, 0, 100))
+        self.loading_bar.setValue(clipped)
+        self.percent_label.setText(f"{clipped}%")
+        self.percent_label.show()
+        if message:
+            self.loading_message.setText(message)
+        if self.steps_host.isVisible():
+            self.update_steps_for_progress(clipped)
+        self._resize_card()
+
+    def update_steps_for_progress(self, value):
+        if value < 12:
+            active = 0
+        elif value < 52:
+            active = 1
+        elif value < 98:
+            active = 2
+        else:
+            active = 3
+        for index, label in enumerate(self.step_labels):
+            text = self.step_texts[index]
+            if index < active:
+                label.setText(f"✓ {text}")
+                label.setStyleSheet(
+                    f"background: transparent; color: {SPLASH_BORDER}; font-size: 12px; font-weight: 800;"
+                )
+            elif index == active:
+                label.setText(f"● {text}")
+                label.setStyleSheet(
+                    f"background: transparent; color: {SPLASH_TEXT}; font-size: 12px; font-weight: 800;"
+                )
+            else:
+                label.setText(f"○ {text}")
+                label.setStyleSheet(
+                    f"background: transparent; color: {SPLASH_TEXT_MUTED}; font-size: 12px; font-weight: 700;"
+                )
+
+    def _resize_card(self):
+        height = SPLASH_HEIGHT
+        if self.steps_host.isVisible():
+            height += 72
+        if self.loading_hint.isVisible():
+            height += 8
+        self.card.setFixedHeight(height)
+
+    def set_show_steps(self, visible):
+        self.steps_host.setVisible(visible)
+        if visible:
+            self.update_steps_for_progress(self.loading_bar.value() if self.loading_bar.maximum() else 0)
+        self._resize_card()
+
+    def present(self, title, message="Please wait.", indeterminate=True, progress=0, show_hint=True, show_steps=False):
+        self.app_line.setText(f"{APP_TITLE}  ·  {APP_VERSION}")
+        self.loading_title.setText(title)
+        self.loading_message.setText(message)
+        self.loading_hint.setVisible(show_hint)
+        self.set_show_steps(show_steps)
+        if indeterminate:
+            self.set_indeterminate()
+        else:
+            self.set_progress(progress, message)
+        self._resize_card()
+        self.reposition()
+        self.raise_()
+        self.show()
+
+    def dismiss(self):
+        self.hide()
+
+
+def create_splash_pixmap(
+    progress_fraction=0.25,
+    status_text="Initializing application...",
+    title_text="Starting up",
+):
+    """Paint startup splash matching the in-app loader (no border, centered white text)."""
+    width, height = SPLASH_WIDTH, SPLASH_HEIGHT
+    pixmap = QPixmap(width, height)
+    pixmap.fill(QColor(SPLASH_FILL))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    side = 32
+    inner_w = width - 2 * side
+    align = int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+    font = painter.font()
+
+    font.setPointSize(11)
+    font.setBold(True)
+    painter.setPen(QPen(QColor(SPLASH_TEXT)))
+    painter.setFont(font)
+    painter.drawText(QRectF(side, 22, inner_w, 22), align, f"{APP_TITLE}  ·  {APP_VERSION}")
+
+    font.setPointSize(20)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(QRectF(side, 54, inner_w, 34), align, title_text)
+
+    font.setPointSize(13)
+    font.setBold(False)
+    painter.setPen(QPen(QColor(SPLASH_TEXT_MUTED)))
+    painter.setFont(font)
+    painter.drawText(QRectF(side, 92, inner_w, 26), align, status_text)
+
+    percent = int(np.clip(progress_fraction, 0.0, 1.0) * 100)
+    font.setPointSize(22)
+    font.setBold(True)
+    painter.setPen(QPen(QColor(SPLASH_TEXT)))
+    painter.setFont(font)
+    painter.drawText(QRectF(side, 126, inner_w, 34), align, f"{percent}%")
+
+    track_width = inner_w
+    track_height = 22
+    track_top = 172
+    clipped = float(np.clip(progress_fraction, 0.05, 1.0))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(QColor("#0f766e")))
+    painter.drawRoundedRect(side, track_top, track_width, track_height, 6, 6)
+    painter.setBrush(QBrush(QColor(SPLASH_BORDER)))
+    fill_width = max(32, int(track_width * clipped))
+    painter.drawRoundedRect(side, track_top, fill_width, track_height, 6, 6)
+
+    font.setPointSize(11)
+    font.setBold(False)
+    painter.setPen(QPen(QColor(SPLASH_TEXT_MUTED)))
+    painter.setFont(font)
+    painter.drawText(QRectF(side, 214, inner_w, 22), align, "Loading interface...")
+    painter.end()
+    return pixmap
+
+
+def build_actions_scroll_page(content_widget):
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setWidget(content_widget)
+    return scroll
 
 
 AXES = ["Axial", "Coronal", "Sagittal"]
@@ -415,69 +719,6 @@ class SliceView(QWidget):
             painter.drawText(int(ann_x) + 13, int(ann_y) - 11, annotation["label"][:18])
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
-
-class Mesh3DView(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.label_meshes = []
-        self.opacity = 0.35
-        self.actors = []
-        self.plotter = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        if QtInteractor is None:
-            missing = QLabel("VTK/PyVista is not available")
-            missing.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            missing.setStyleSheet("background: #11151b; color: #f59e0b; font-weight: 900;")
-            layout.addWidget(missing)
-        else:
-            self.plotter = QtInteractor(self)
-            self.plotter.set_background("#11151b")
-            layout.addWidget(self.plotter.interactor)
-            self.plotter.add_axes(line_width=1, color="#8da0ae")
-            self.plotter.camera_position = "iso"
-
-    def render_empty(self):
-        if self.plotter is None:
-            return
-        for actor in self.actors:
-            self.plotter.remove_actor(actor, reset_camera=False)
-        self.actors = []
-        self.plotter.render()
-
-    def set_scene(self, label_meshes=None, opacity=None):
-        self.label_meshes = label_meshes or []
-        if opacity is not None:
-            self.opacity = opacity
-        if not self.label_meshes:
-            self.render_empty()
-            return
-        self.render_scene()
-
-    def render_scene(self):
-        if self.plotter is None:
-            return
-        for actor in self.actors:
-            self.plotter.remove_actor(actor, reset_camera=False)
-        self.actors = []
-        for mesh in self.label_meshes:
-            verts = np.asarray(mesh["verts"])
-            faces = np.asarray(mesh["faces"])
-            label = int(mesh["label"])
-            poly = polydata_from_triangles(verts, faces)
-            if poly is None:
-                continue
-            color = label_color(label) / 255.0
-            actor = self.plotter.add_mesh(
-                poly,
-                color=(float(color[0]), float(color[1]), float(color[2])),
-                opacity=self.opacity,
-                smooth_shading=True,
-                specular=0.2,
-                name=f"label_{label}",
-            )
-            self.actors.append(actor)
-        self.plotter.reset_camera()
 
 class Mesh3DView(QWidget):
     def __init__(self):
@@ -999,6 +1240,7 @@ class FourViewWorkspace(QWidget):
 
 class Worker(QThread):
     screw_found = pyqtSignal(dict)
+    progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, object, list, str)
     failed = pyqtSignal(str)
 
@@ -1006,6 +1248,9 @@ class Worker(QThread):
         super().__init__()
         self.ct_path = ct_path
         self.seg_path = seg_path
+
+    def report(self, value, message):
+        self.progress.emit(int(np.clip(value, 0, 100)), str(message))
 
     def build_mesh_from_combined(self, seg_path):
         nii = nib.load(seg_path)
@@ -1018,31 +1263,51 @@ class Worker(QThread):
 
     def run(self):
         try:
+            self.report(0, "Starting planning pipeline...")
             if self.seg_path:
                 print("MODE: Using loaded segmentation for mesh and planning.")
                 combined_path = self.seg_path
+                self.report(8, "Building 3D mesh from segmentation...")
                 verts_world, faces = self.build_mesh_from_combined(combined_path)
+                self.report(22, "Mesh ready. Preparing screw optimization...")
             elif self.ct_path:
                 print("MODE: Running TotalSegmentator from CT scan.")
+                self.report(5, "Running TotalSegmentator (this may take several minutes)...")
                 seg_data = run_totalseg(self.ct_path)
+                self.report(38, "Building vertebra surface mesh...")
                 combined_path = seg_data["combined_seg_path"]
                 verts_world, faces = build_vertebra_mesh(seg_data["seg_folder"])
+                self.report(48, "Segmentation complete. Starting screw optimization...")
             else:
                 raise ValueError("Load a CT scan or segmentation before running planning.")
 
             print("PLANNING: Calculating screw trajectories.")
             results = []
             label_map = {5: "L1", 4: "L2", 3: "L3", 2: "L4", 1: "L5"}
+            self.report(52, "Loading segmentation for trajectory analysis...")
             seg, spacing, affine = loadNifti(combined_path)
-            valid_segments = getValidLabels(seg)
-            for label_val, mask in sorted(valid_segments, reverse=True):
+            valid_segments = list(sorted(getValidLabels(seg), reverse=True))
+            planning_steps = max(len(valid_segments) * 2, 1)
+            step_index = 0
+            plan_start, plan_end = 55, 96
+
+            for label_val, mask in valid_segments:
                 name = label_map.get(label_val, str(label_val))
+                self.report(
+                    plan_start + int((plan_end - plan_start) * step_index / planning_steps),
+                    f"Analyzing {name} pedicles...",
+                )
                 centroid, axes, total_depth = computeStableFrame(mask, affine)
                 dist = computeDistance(mask, spacing)
                 mask_float = mask.astype(float)
                 left_center, right_center = pedicleCenters(mask, dist, centroid, axes, affine)
                 for side, center in [("Left", left_center), ("Right", right_center)]:
+                    self.report(
+                        plan_start + int((plan_end - plan_start) * step_index / planning_steps),
+                        f"Optimizing {name} {side} screw trajectory...",
+                    )
                     res = optimize(center, axes, side, mask_float, dist, affine, centroid, total_depth, name)
+                    step_index += 1
                     if not res:
                         print(f"WARNING: No valid trajectory found for {name} {side}.")
                         continue
@@ -1061,6 +1326,7 @@ class Worker(QThread):
                     results.append(screw)
                     self.screw_found.emit(screw)
                     print(f"SUCCESS: Trajectory found for {name} {side}.")
+            self.report(100, "Planning complete.")
             self.finished.emit(verts_world, faces, results, combined_path)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -1129,25 +1395,9 @@ class GUI(QMainWindow):
         scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll_area.setWidget(self.tabs)
         main.addWidget(scroll_area, 1)
-        self.loading_overlay = QGroupBox("")
-        self.loading_overlay.setObjectName("LoadingOverlay")
-        loading_layout = QVBoxLayout(self.loading_overlay)
-        loading_layout.setContentsMargins(28, 24, 28, 24)
-        loading_layout.setSpacing(12)
-        self.loading_title = QLabel("Working...")
-        self.loading_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_title.setObjectName("LoadingTitle")
-        self.loading_message = QLabel("Please wait.")
-        self.loading_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_message.setWordWrap(True)
-        self.loading_bar = QProgressBar()
-        self.loading_bar.setRange(0, 0)
-        self.loading_bar.setTextVisible(False)
-        loading_layout.addWidget(self.loading_title)
-        loading_layout.addWidget(self.loading_message)
-        loading_layout.addWidget(self.loading_bar)
+        self._central_root = root
+        self.loading_overlay = LoadingOverlay(root)
         self.loading_overlay.hide()
-        main.addWidget(self.loading_overlay)
 
         workspace_page = QWidget()
         workspace_layout = QHBoxLayout(workspace_page)
@@ -1160,41 +1410,53 @@ class GUI(QMainWindow):
         self.actions_panel.setObjectName("ActionsPanel")
         actions_panel_layout = QVBoxLayout(self.actions_panel)
         actions_panel_layout.setContentsMargins(8, 10, 8, 8)
-        actions_panel_layout.setSpacing(0)
-        actions_scroll = QScrollArea()
-        actions_scroll.setWidgetResizable(True)
-        actions_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        actions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        actions_content = QWidget()
-        actions_layout = QVBoxLayout(actions_content)
-        actions_layout.setContentsMargins(4, 4, 4, 4)
-        actions_layout.setSpacing(8)
-        actions_scroll.setWidget(actions_content)
-        actions_panel_layout.addWidget(actions_scroll, 1)
+        actions_panel_layout.setSpacing(6)
 
-        case_title = QLabel("Case")
-        case_title.setObjectName("PanelTitle")
+        self.actions_tabs = QTabWidget()
+        self.actions_tabs.setObjectName("ActionsTabs")
+        self.actions_tabs.setDocumentMode(True)
+
+        load_files_host = QWidget()
+        load_files_layout = QVBoxLayout(load_files_host)
+        load_files_layout.setContentsMargins(4, 8, 4, 8)
+        load_files_layout.setSpacing(8)
         load_ct_btn = QPushButton("Load CT")
         apply_icon(load_ct_btn, "fa5s.folder-open")
         load_ct_btn.clicked.connect(self.load_ct)
         load_seg_btn = QPushButton("Load Segmentation")
         apply_icon(load_seg_btn, "fa5s.layer-group")
         load_seg_btn.clicked.connect(self.load_seg)
+        load_plan_btn = QPushButton("Load Plan")
+        apply_icon(load_plan_btn, "fa5s.file-import")
+        load_plan_btn.clicked.connect(self.load_plan)
         self.ct_list = QListWidget()
         self.ct_list.setMinimumHeight(95)
         self.ct_list.itemClicked.connect(self.ct_item_clicked)
         self.seg_list = QListWidget()
         self.seg_list.setMinimumHeight(95)
         self.seg_list.itemClicked.connect(self.seg_item_clicked)
-        map_btn = QPushButton("Map Seg to CT")
-        apply_icon(map_btn, "fa5s.link")
-        map_btn.clicked.connect(self.map_selected_seg_to_ct)
         remove_ct_btn = QPushButton("Remove CT")
         apply_icon(remove_ct_btn, "fa5s.undo")
         remove_ct_btn.clicked.connect(self.remove_selected_ct)
         remove_seg_btn = QPushButton("Remove Seg")
         apply_icon(remove_seg_btn, "fa5s.undo")
         remove_seg_btn.clicked.connect(self.remove_selected_seg)
+        load_files_layout.addWidget(load_ct_btn)
+        load_files_layout.addWidget(load_seg_btn)
+        load_files_layout.addWidget(load_plan_btn)
+        load_files_layout.addWidget(QLabel("Loaded CTs"))
+        load_files_layout.addWidget(self.ct_list)
+        load_files_layout.addWidget(remove_ct_btn)
+        load_files_layout.addWidget(QLabel("Loaded Segmentations"))
+        load_files_layout.addWidget(self.seg_list)
+        load_files_layout.addWidget(remove_seg_btn)
+        load_files_layout.addStretch(1)
+        self.actions_tabs.addTab(build_actions_scroll_page(load_files_host), "Load Files")
+
+        planning_host = QWidget()
+        planning_layout = QVBoxLayout(planning_host)
+        planning_layout.setContentsMargins(4, 8, 4, 8)
+        planning_layout.setSpacing(8)
         self.crosshair_toggle_btn = QPushButton("Crosshair")
         apply_icon(self.crosshair_toggle_btn, "fa5s.crosshairs")
         self.crosshair_toggle_btn.setCheckable(True)
@@ -1202,57 +1464,53 @@ class GUI(QMainWindow):
         self.crosshair_toggle_btn.setEnabled(False)
         self.crosshair_toggle_btn.setToolTip("Toggle crosshair visibility")
         self.crosshair_toggle_btn.clicked.connect(self.workspace.set_show_crosshair)
-        actions_layout.addWidget(case_title)
-        actions_layout.addWidget(load_ct_btn)
-        actions_layout.addWidget(load_seg_btn)
-        actions_layout.addWidget(QLabel("Loaded CTs"))
-        actions_layout.addWidget(self.ct_list)
-        actions_layout.addWidget(remove_ct_btn)
-        actions_layout.addWidget(QLabel("Loaded Segmentations"))
-        actions_layout.addWidget(self.seg_list)
-        actions_layout.addWidget(map_btn)
-        actions_layout.addWidget(remove_seg_btn)
-
-        display_title = QLabel("MPR Display")
-        display_title.setObjectName("PanelTitle")
         self.window_preset_combo = QComboBox()
         self.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
         self.window_preset_combo.currentTextChanged.connect(self.workspace.set_window_preset)
-        actions_layout.addWidget(display_title)
-        actions_layout.addWidget(self.window_preset_combo)
-        actions_layout.addWidget(self.crosshair_toggle_btn)
-        actions_layout.addWidget(self.run_btn)
-        actions_layout.addWidget(self.visual_btn)
+        planning_layout.addWidget(QLabel("Window preset"))
+        planning_layout.addWidget(self.window_preset_combo)
+        planning_layout.addWidget(self.crosshair_toggle_btn)
+        planning_layout.addWidget(self.run_btn)
+        planning_layout.addWidget(self.visual_btn)
+        planning_layout.addStretch(1)
+        self.actions_tabs.addTab(build_actions_scroll_page(planning_host), "Planning")
 
-        annotation_title = QLabel("Annotations")
-        annotation_title.setObjectName("PanelTitle")
+        annotation_host = QWidget()
+        annotation_layout = QVBoxLayout(annotation_host)
+        annotation_layout.setContentsMargins(4, 8, 4, 8)
+        annotation_layout.setSpacing(8)
         self.annotation_list = QListWidget()
-        self.annotation_list.setMinimumHeight(120)
+        self.annotation_list.setMinimumHeight(140)
         self.annotation_list.itemClicked.connect(self.annotation_item_clicked)
+        load_ann_btn = QPushButton("Load Annotations JSON")
+        apply_icon(load_ann_btn, "fa5s.file-import")
+        load_ann_btn.clicked.connect(self.load_annotations)
         save_ann_btn = QPushButton("Save Annotations JSON")
         apply_icon(save_ann_btn, "fa5s.save")
         save_ann_btn.clicked.connect(self.save_annotations)
-        actions_layout.addWidget(annotation_title)
-        actions_layout.addWidget(self.annotation_list)
-        actions_layout.addWidget(save_ann_btn)
+        annotation_layout.addWidget(self.annotation_list)
+        annotation_layout.addWidget(load_ann_btn)
+        annotation_layout.addWidget(save_ann_btn)
+        annotation_layout.addStretch(1)
+        self.actions_tabs.addTab(build_actions_scroll_page(annotation_host), "Annotation")
 
-        plan_title = QLabel("Plan Files")
-        plan_title.setObjectName("PanelTitle")
-        load_plan_btn = QPushButton("Load Plan")
-        apply_icon(load_plan_btn, "fa5s.file-import")
-        load_plan_btn.clicked.connect(self.load_plan)
+        export_host = QWidget()
+        export_layout = QVBoxLayout(export_host)
+        export_layout.setContentsMargins(4, 8, 4, 8)
+        export_layout.setSpacing(8)
         save_btn = QPushButton("Save Plan JSON")
         apply_icon(save_btn, "fa5s.save")
         save_btn.clicked.connect(self.save_json)
         report_btn = QPushButton("Export CSV Report")
         apply_icon(report_btn, "fa5s.file-csv")
         report_btn.clicked.connect(self.export_csv)
-        actions_layout.addWidget(plan_title)
-        actions_layout.addWidget(load_plan_btn)
-        actions_layout.addWidget(save_btn)
-        actions_layout.addWidget(report_btn)
-        actions_layout.addStretch(1)
-        self.actions_panel.setFixedWidth(330)
+        export_layout.addWidget(save_btn)
+        export_layout.addWidget(report_btn)
+        export_layout.addStretch(1)
+        self.actions_tabs.addTab(build_actions_scroll_page(export_host), "Export")
+
+        actions_panel_layout.addWidget(self.actions_tabs, 1)
+        self.actions_panel.setFixedWidth(340)
         self.actions_panel.hide()
         workspace_layout.addWidget(self.actions_panel)
         self.tabs.addTab(workspace_page, "Planning Workspace")
@@ -1294,10 +1552,9 @@ class GUI(QMainWindow):
             "QGroupBox { border: 1px solid #343c49; border-radius: 5px; margin-top: 8px; padding-top: 10px; font-weight: 800; }"
             "QGroupBox#ViewBox { background: #20262f; border: 1px solid #343c49; border-radius: 5px; margin-top: 0; padding-top: 0; }"
             "QGroupBox#ActionsPanel { background: #20262f; border: 1px solid #3f4a59; border-radius: 6px; }"
-            "QGroupBox#LoadingOverlay { background: #0b1220; border: 1px solid #2dd4bf; border-radius: 8px; margin-top: 0; padding-top: 0; }"
-            "QLabel#LoadingTitle { color: #f8fafc; font-size: 16px; font-weight: 900; }"
-            "QProgressBar { background: #111827; border: 1px solid #343c49; border-radius: 4px; height: 10px; }"
-            "QProgressBar::chunk { background: #2dd4bf; border-radius: 4px; }"
+            "QTabWidget#ActionsTabs::pane { border: 1px solid #3f4a59; background: #1a212b; border-radius: 4px; top: -1px; }"
+            "QTabWidget#ActionsTabs QTabBar::tab { background: #262d37; color: #cbd5e1; padding: 6px 10px; font-weight: 800; border: 1px solid #3f4a59; }"
+            "QTabWidget#ActionsTabs QTabBar::tab:selected { background: #0f766e; color: white; }"
             "QLabel#PanelTitle { color: #2dd4bf; font-size: 12px; font-weight: 900; padding-top: 4px; padding-bottom: 2px; }"
             "QListWidget { background: #11151b; color: #e5e7eb; border: 1px solid #343c49; border-radius: 4px; }"
             "QScrollArea { border: none; }"
@@ -1309,14 +1566,56 @@ class GUI(QMainWindow):
         self.log_box.append(text)
         self.log_box.ensureCursorVisible()
 
-    def show_loading(self, title, message="Please wait."):
-        self.loading_title.setText(title)
-        self.loading_message.setText(message)
-        self.loading_overlay.show()
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "loading_overlay"):
+            self.loading_overlay.reposition()
+
+    def show_loading(
+        self,
+        title,
+        message="Please wait.",
+        indeterminate=True,
+        progress=0,
+        show_hint=False,
+        show_steps=False,
+    ):
+        self._loading_ui_state = {
+            "run": self.run_btn.isEnabled(),
+            "visual": self.visual_btn.isEnabled(),
+            "actions": self.actions_toggle_btn.isEnabled(),
+        }
+        self.loading_overlay.present(
+            title,
+            message,
+            indeterminate=indeterminate,
+            progress=progress,
+            show_hint=show_hint,
+            show_steps=show_steps,
+        )
+        self.tabs.setEnabled(False)
+        self.actions_toggle_btn.setEnabled(False)
+        self.run_btn.setEnabled(False)
+        self.visual_btn.setEnabled(False)
+        if hasattr(self, "actions_panel"):
+            self.actions_panel.setEnabled(False)
         QApplication.processEvents()
 
     def hide_loading(self):
-        self.loading_overlay.hide()
+        self.loading_overlay.dismiss()
+        self.tabs.setEnabled(True)
+        previous = getattr(self, "_loading_ui_state", {})
+        self.actions_toggle_btn.setEnabled(previous.get("actions", True))
+        self.run_btn.setEnabled(previous.get("run", True))
+        self.visual_btn.setEnabled(previous.get("visual", False))
+        if hasattr(self, "actions_panel"):
+            self.actions_panel.setEnabled(True)
+        QApplication.processEvents()
+
+    def update_loading_progress(self, value, message):
+        if not self.loading_overlay.isVisible():
+            return
+        self.loading_overlay.set_progress(value, message)
         QApplication.processEvents()
 
     def add_annotation_row(self, annotation):
@@ -1557,11 +1856,19 @@ class GUI(QMainWindow):
         self.workspace.set_results([])
         self.run_btn.setEnabled(False)
         self.visual_btn.setEnabled(False)
-        self.show_loading("Running Planning", "Calculating trajectories. You can watch details in the Console tab.")
+        self.show_loading(
+            "Running Planning",
+            "Preparing segmentation and screw trajectories.",
+            indeterminate=False,
+            progress=0,
+            show_hint=True,
+            show_steps=True,
+        )
         self.status_label.setText("Status: planning running")
         self.tabs.setCurrentIndex(2)
         self.worker = Worker(self.ct_path, self.seg_path)
         self.worker.screw_found.connect(self.add_table_row)
+        self.worker.progress.connect(self.update_loading_progress)
         self.worker.finished.connect(self.finish_pipeline)
         self.worker.failed.connect(self.fail_pipeline)
         self.worker.start()
@@ -1592,9 +1899,9 @@ class GUI(QMainWindow):
         self.faces = faces
         self.results = results
         self.combined_seg_path = combined_seg_path
+        self.hide_loading()
         self.run_btn.setEnabled(True)
         self.visual_btn.setEnabled(bool(results))
-        self.hide_loading()
         self.status_label.setText(f"Status: complete ({len(results)} screws)")
         print("COMPLETED: Planning pipeline finished.")
         self.refresh_generated_segmentation(combined_seg_path)
@@ -1622,9 +1929,9 @@ class GUI(QMainWindow):
             print(f"WARNING: Could not load segmentation into workspace: {exc}")
 
     def fail_pipeline(self, message):
+        self.hide_loading()
         self.run_btn.setEnabled(True)
         self.visual_btn.setEnabled(False)
-        self.hide_loading()
         self.status_label.setText("Status: failed")
         print(f"ERROR: {message}")
 
@@ -1641,12 +1948,15 @@ class GUI(QMainWindow):
             print("ERROR: Run planning before visualization.")
             return
         try:
+            combined_seg = self.combined_seg_path or self.seg_path
+            seg_folder = os.path.dirname(combined_seg) if combined_seg else None
             fig, show = visualize_surgical_plan(
                 self.verts,
                 self.faces,
                 self.results,
                 volume_path=self.ct_path or self.seg_path,
-                segmentation_path=self.combined_seg_path or self.seg_path,
+                segmentation_path=combined_seg,
+                seg_folder=seg_folder,
             )
             show()
         except Exception as exc:
@@ -1696,7 +2006,14 @@ class GUI(QMainWindow):
             print(f"WARNING: Segmentation path not found: {payload.get('segmentation_path')}")
 
         self.results = payload.get("results", [])
-        self.workspace.annotations = payload.get("annotations", [])
+        if payload.get("annotations"):
+            try:
+                self.workspace.annotations = self.parse_annotations_payload(payload)
+            except ValueError as exc:
+                print(f"WARNING: Could not load annotations from plan: {exc}")
+                self.workspace.annotations = []
+        else:
+            self.workspace.annotations = []
         self.refresh_annotation_list()
         self.populate_table_from_results()
         self.workspace.set_results(self.results)
@@ -1790,6 +2107,58 @@ class GUI(QMainWindow):
                 ])
         print(f"SYSTEM: Exported report CSV to {file_path}")
 
+    def parse_annotations_payload(self, payload):
+        if isinstance(payload, list):
+            annotations = payload
+        elif isinstance(payload, dict):
+            annotations = payload.get("annotations", [])
+        else:
+            raise ValueError("Annotation file must be a JSON list or an object with an 'annotations' field.")
+        if not isinstance(annotations, list):
+            raise ValueError("Annotations must be stored as a JSON list.")
+        parsed = []
+        for index, item in enumerate(annotations):
+            if not isinstance(item, dict):
+                print(f"WARNING: Skipped annotation row {index + 1} (not an object).")
+                continue
+            voxel = item.get("voxel")
+            if voxel is None or len(voxel) < 3:
+                print(f"WARNING: Skipped annotation row {index + 1} (missing voxel).")
+                continue
+            parsed.append({
+                "label": str(item.get("label", f"Annotation {index + 1}")).strip() or f"Annotation {index + 1}",
+                "voxel": [int(round(float(voxel[0]))), int(round(float(voxel[1]))), int(round(float(voxel[2])))],
+                "world": item.get("world"),
+                "segmentation_label": item.get("segmentation_label"),
+                "view": item.get("view", ""),
+                "created": item.get("created", ""),
+            })
+        return parsed
+
+    def load_annotations(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load annotations",
+            "",
+            "Annotation Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            annotations = self.parse_annotations_payload(payload)
+            if not annotations:
+                print("ERROR: No valid annotations found in file.")
+                return
+            self.workspace.annotations = annotations
+            self.refresh_annotation_list()
+            self.workspace.update_mpr_views()
+            self.tabs.setCurrentIndex(0)
+            print(f"SYSTEM: Loaded {len(annotations)} annotation(s) from {path}")
+        except Exception as exc:
+            print(f"ERROR: Could not load annotations: {exc}")
+
     def save_annotations(self):
         if not self.workspace.annotations:
             print("ERROR: No annotations to save.")
@@ -1804,12 +2173,21 @@ class GUI(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    pix = QPixmap(460, 200)
-    pix.fill(QColor("#1e293b"))
-    splash = QSplashScreen(pix)
+    splash = QSplashScreen(
+        create_splash_pixmap(0.25, "Initializing application...", "Starting up"),
+        Qt.WindowType.WindowStaysOnTopHint,
+    )
     splash.show()
+    app.processEvents()
+    splash.setPixmap(
+        create_splash_pixmap(0.55, "Loading workspace...", APP_TITLE)
+    )
+    app.processEvents()
     window = GUI()
-    time.sleep(0.5)
+    app.processEvents()
+    splash.setPixmap(create_splash_pixmap(1.0, "Ready", APP_TITLE))
+    app.processEvents()
+    time.sleep(0.6)
     window.show()
     splash.finish(window)
     sys.exit(app.exec())
