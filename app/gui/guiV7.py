@@ -35,7 +35,7 @@ QtCore.QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLConte
 
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
 
-from geometryV5 import (
+from app.geometry.geometryV5 import (
     computeDistance,
     computeStableFrame,
     getValidLabels,

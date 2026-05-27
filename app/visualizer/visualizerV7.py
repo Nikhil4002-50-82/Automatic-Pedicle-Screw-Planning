@@ -117,105 +117,34 @@ def rodrigues_rotate(vector, axis, angle_deg):
     )
 
 
-def load_and_transform_screw(entry, tip, diameter, length):
-    """
-    Procedurally creates a highly realistic medical pedicle screw featuring:
-    1. Polyaxial Tool Head Assembly (Spherical base joint + Slotted Tulip housing)
-    2. Varying Core Tapering (Thicker proximal pedicle zone transitioning to a tapered body)
-    3. Helical Thread Pitch simulation via close-interval micro-crests
-    """
-    if pv is None:
-        return None
-
+def create_cylinder_mesh(entry, tip, diameter, resolution=28):
     entry = np.asarray(entry, dtype=float)
     tip = np.asarray(tip, dtype=float)
-    axis = normalize(tip - entry)
-    if axis is None:
+    axis, n1, n2 = orthonormal_basis(entry, tip)
+    if axis is None or diameter <= 0:
         return None
 
-    # --- 1. HEAD ASSEMBLY (POLYAXIAL TULIP + SPHERE) ---
-    head_diameter = diameter * 1.6
-    tulip_length = 10.0
-    sphere_radius = (diameter * 1.3) / 2.0
-    
-    # Spherical polyaxial base exactly at entry point
-    head_sphere = pv.Sphere(radius=sphere_radius, center=entry, theta_resolution=24, phi_resolution=24)
-    
-    # Slotted Tulip housing sitting behind entry point
-    tulip_center = entry - (axis * (tulip_length / 2.0))
-    head_tulip = pv.Cylinder(
-        center=tulip_center,
-        direction=axis,
-        radius=head_diameter / 2.0,
-        height=tulip_length,
-        resolution=32
-    )
-    combined_hardware = head_sphere.merge(head_tulip)
+    radius = diameter / 2.0
+    theta = np.linspace(0.0, 2.0 * np.pi, resolution, endpoint=False)
+    ring = np.cos(theta)[:, None] * n1 + np.sin(theta)[:, None] * n2
+    vertices = np.vstack((entry + ring * radius, tip + ring * radius, entry, tip))
 
-    # --- 2. TAPERED SHAFT & CORE TIMING ---
-    taper_length = diameter * 1.2
-    bone_shaft_length = length - taper_length
-    if bone_shaft_length < 2.0:
-        bone_shaft_length = length * 0.75
-        taper_length = length * 0.25
+    idx = np.arange(resolution)
+    nxt = (idx + 1) % resolution
+    tip_idx = idx + resolution
+    tip_nxt = nxt + resolution
+    entry_center = 2 * resolution
+    tip_center = 2 * resolution + 1
 
-    # Proximal pedicle zone (first 35% of shaft length is slightly thicker)
-    pedicle_zone_len = bone_shaft_length * 0.35
-    body_zone_len = bone_shaft_length - pedicle_zone_len
-
-    proximal_radius = (diameter * 1.08) / 2.0
-    distal_radius = diameter / 2.0
-
-    # Proximal cylindrical core
-    prox_center = entry + (axis * (pedicle_zone_len / 2.0))
-    prox_cyl = pv.Cylinder(center=prox_center, direction=axis, radius=proximal_radius, height=pedicle_zone_len, resolution=32)
-    combined_hardware = combined_hardware.merge(prox_cyl)
-
-    # Distal core (transitioning from proximal to distal base radius)
-    dist_center = entry + (axis * (pedicle_zone_len + body_zone_len / 2.0))
-    dist_cyl = pv.Cylinder(center=dist_center, direction=axis, radius=distal_radius, height=body_zone_len, resolution=32)
-    combined_hardware = combined_hardware.merge(dist_cyl)
-
-    # Sharp self-tapping terminal tip cone
-    cone_base_center = entry + (axis * bone_shaft_length)
-    tip_cone = pv.Cone(
-        center=cone_base_center + (axis * (taper_length / 2.0)),
-        direction=axis,
-        radius=distal_radius,
-        height=taper_length,
-        resolution=32
-    )
-    combined_hardware = combined_hardware.merge(tip_cone)
-
-    # --- 3. PROCEDURAL HELICAL THREAD PITCH ---
-    # Stack high-frequency micro-rings along the bone shaft to simulate realistic thread crests
-    thread_pitch = 1.75  # mm per thread turn
-    num_threads = int(bone_shaft_length / thread_pitch)
-    thread_crest_thickness = 0.45
-    thread_outward_depth = diameter * 0.12  # how far threads cut past the core radius
-
-    for i in range(num_threads):
-        distance_along = pedicle_zone_len * 0.3 + (i * thread_pitch)
-        if distance_along >= bone_shaft_length - 1.0:
-            break
-            
-        ring_center = entry + (axis * distance_along)
-        
-        # Determine appropriate core radius baseline for thread scaling
-        current_base_rad = proximal_radius if distance_along <= pedicle_zone_len else distal_radius
-        outer_thread_rad = current_base_rad + thread_outward_depth
-
-        # Create a single crisp thread crest ring
-        thread_ring = pv.Cylinder(
-            center=ring_center,
-            direction=axis,
-            radius=outer_thread_rad,
-            height=thread_crest_thickness,
-            resolution=32
-        )
-        combined_hardware = combined_hardware.merge(thread_ring)
-
-    return combined_hardware
+    faces = []
+    for a, b, c, d in zip(idx, nxt, tip_nxt, tip_idx):
+        faces.append([a, d, c])
+        faces.append([a, c, b])
+    for a, b in zip(idx, nxt):
+        faces.append([entry_center, b, a])
+    for a, b in zip(idx, nxt):
+        faces.append([tip_center, a + resolution, b + resolution])
+    return vertices, np.asarray(faces, dtype=np.int64)
 
 
 def triangles_to_pyvista_faces(faces):
@@ -400,14 +329,7 @@ def adjusted_result(original, state):
     result["length"] = float(new_length)
     if "diameter" in state:
         result["diameter"] = float(state["diameter"])
-        
-    result["adjustments"] = {
-        "lr_mm": float(state["lr_mm"]),
-        "ud_mm": float(state["ud_mm"]),
-        "axial_deg": float(state["axial_deg"]),
-        "sagittal_deg": float(state["sagittal_deg"]),
-        "length_mm": float(state["length_mm"]),
-    }
+    result["adjustments"] = dict(state)
     return result
 
 
@@ -494,7 +416,7 @@ class ManualVisualizerWindow(QMainWindow):
         self.update_values_panel()
 
     def init_ui(self):
-        self.setWindowTitle("Manual Screw Visualizer V8 (Procedural Realism)")
+        self.setWindowTitle("Manual Screw Visualizer V7")
         container = QWidget()
         root = QHBoxLayout(container)
         root.setContentsMargins(0, 0, 0, 0)
@@ -624,7 +546,7 @@ class ManualVisualizerWindow(QMainWindow):
         ]:
             row = QLabel("0.0")
             row.setStyleSheet("color: #f8fafc; font-weight: 600;")
-            self.value_labels[f"{key}"] = row
+            self.value_labels[f"delta_{key}"] = row
             delta_form.addRow(label, row)
 
         self.level_summary_label = QLabel("")
@@ -731,7 +653,6 @@ class ManualVisualizerWindow(QMainWindow):
         panel_layout.addWidget(sidebar_tabs, 1)
 
         root.addWidget(panel)
-        self.central_widget = container
         self.setCentralWidget(container)
         self.resize(1480, 920)
 
@@ -1084,7 +1005,7 @@ class ManualVisualizerWindow(QMainWindow):
         self.value_labels["orig_diameter"].setText(f"{float(original.get('diameter', 0.0)):.1f}")
 
         for key in ["lr_mm", "ud_mm", "axial_deg", "sagittal_deg", "length_mm"]:
-            self.value_labels[f"{key}"].setText(f"{float(state.get(key, 0.0)):.1f}")
+            self.value_labels[f"delta_{key}"].setText(f"{float(state.get(key, 0.0)):.1f}")
 
         if self.selected_vertebra is not None:
             lines = []
@@ -1128,6 +1049,7 @@ class ManualVisualizerWindow(QMainWindow):
             status, color, _, _ = evaluate_screw_safety(result, self.seg_data, self.seg_affine)
             diameter = float(result.get("diameter", 5.5) or 5.5)
             line_name = f"screw_path_{index}"
+            entry_name = f"screw_entry_{index}"
             screw_name = f"screw_body_{index}"
             selected = index == self.current_index
 
@@ -1136,21 +1058,21 @@ class ManualVisualizerWindow(QMainWindow):
                 self.plotter.add_mesh(line, color=color, line_width=5 if selected else 3, name=line_name)
                 self.screw_actor_names.append(line_name)
 
-            # Generate advanced high-fidelity procedural hardware model
-            screw_mesh = load_and_transform_screw(
-                entry,
-                tip,
-                diameter,
-                float(result.get("length", 40.0)),
-            )
-            if screw_mesh is not None:
+            marker = pv.Sphere(radius=diameter * 0.42, center=entry) if pv is not None else None
+            if marker is not None:
+                self.plotter.add_mesh(marker, color="#2dd4bf", name=entry_name)
+                self.screw_actor_names.append(entry_name)
+
+            cylinder = create_cylinder_mesh(entry, tip, diameter)
+            if cylinder is not None:
+                vertices, faces = cylinder
+                screw_mesh = polydata_from_triangles(vertices, faces)
                 self.plotter.add_mesh(
                     screw_mesh,
                     color=color,
-                    opacity=1.0 if selected else 0.90,
+                    opacity=0.85 if selected else 0.55,
                     smooth_shading=True,
-                    specular=0.55,       # High specularity to let simulated threads catch realistic light highlights
-                    specular_power=15,
+                    specular=0.35,
                     name=screw_name,
                 )
                 self.screw_actor_names.append(screw_name)
@@ -1164,7 +1086,6 @@ class ManualVisualizerWindow(QMainWindow):
             "axial_deg": 0.0,
             "sagittal_deg": 0.0,
             "length_mm": 0.0,
-            "diameter": float(self.original_results[self.current_index].get("diameter", 5.5) or 5.5),
         }
         self.recompute_results()
         self.load_slider_state()
@@ -1174,7 +1095,7 @@ class ManualVisualizerWindow(QMainWindow):
 
     def save_json(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save adjusted plan", "adjusted_screw_plan_v8.json", "JSON Files (*.json)"
+            self, "Save adjusted plan", "adjusted_screw_plan_v7.json", "JSON Files (*.json)"
         )
         if not file_path:
             return
@@ -1189,7 +1110,7 @@ class ManualVisualizerWindow(QMainWindow):
 
     def export_csv(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export planning report", "screw_plan_report_v8.csv", "CSV Files (*.csv)"
+            self, "Export planning report", "screw_plan_report_v7.csv", "CSV Files (*.csv)"
         )
         if not file_path:
             return
@@ -1217,7 +1138,7 @@ class ManualVisualizerWindow(QMainWindow):
 
     def export_image(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save visualization image", "visualization_v8.png", "PNG Files (*.png)"
+            self, "Save visualization image", "visualization_v7.png", "PNG Files (*.png)"
         )
         if not file_path:
             return
@@ -1257,8 +1178,6 @@ def visualize_surgical_plan(
 
     def show_figure():
         window.show()
-        window.raise_()
-        window.activateWindow()
         if owns_app:
             app.exec()
         return window

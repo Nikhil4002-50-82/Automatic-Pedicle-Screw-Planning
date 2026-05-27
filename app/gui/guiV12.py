@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QHeaderView,
+    QMessageBox,
     QProgressBar,
     QStyle,
 )
@@ -54,7 +55,7 @@ except Exception:
 
 QtCore.QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 
-from geometryV5 import (
+from app.geometry.geometryV5 import (
     computeDistance,
     computeStableFrame,
     getValidLabels,
@@ -64,14 +65,14 @@ from geometryV5 import (
 )
 from mesh_builder import build_vertebra_mesh
 from run_totalseg import run_totalseg
-from visualizerV7 import visualize_surgical_plan
+from visualizerV8 import visualize_surgical_plan
 
 
 APP_TITLE = "Automatic Pedicle Screw Planning"
 APP_VERSION = "V12.0"
 SPLASH_WIDTH = 560
 SPLASH_HEIGHT = 280
-SPLASH_FILL = "#0b1220"
+SPLASH_FILL = "#1e293b"
 SPLASH_BORDER = "#2dd4bf"
 SPLASH_TEXT = "#ffffff"
 SPLASH_TEXT_MUTED = "#e2e8f0"
@@ -611,6 +612,8 @@ class SliceView(QWidget):
         self.plane_bounds = None
         self.fill_mode = True
         self.show_crosshair = False
+        self.results = []
+        self.affine = None
         self.setMinimumSize(280, 230)
         self.setStyleSheet("background: #000000; color: #e5e7eb; border-radius: 4px;")
 
@@ -621,7 +624,7 @@ class SliceView(QWidget):
         self.fill_mode = bool(enabled)
         self.update()
 
-    def set_slice(self, rgb, coord, annotations, plane_bounds=None):
+    def set_slice(self, rgb, coord, annotations, plane_bounds=None, results=None, affine=None):
         rgb = np.ascontiguousarray(rgb)
         height, width, _ = rgb.shape
         image = QImage(rgb.data, width, height, 3 * width, QImage.Format.Format_RGB888)
@@ -629,6 +632,8 @@ class SliceView(QWidget):
         self.coord = list(coord)
         self.annotations = list(annotations)
         self.plane_bounds = plane_bounds
+        self.results = results or []
+        self.affine = affine
         self.update()
 
     def current_plane_bounds(self):
@@ -1203,7 +1208,7 @@ class FourViewWorkspace(QWidget):
     def set_view_pixmap(self, view, rgb, axis, shape):
         view.set_source_shape(shape)
         view.show_crosshair = self.show_crosshair
-        view.set_slice(rgb, self.coord, self.annotations)
+        view.set_slice(rgb, self.coord, self.annotations, results=self.results, affine=self.affine)
 
     def draw_overlays(self, pixmap, axis, shape):
         painter = QPainter(pixmap)
@@ -1464,6 +1469,7 @@ class GUI(QMainWindow):
         self.crosshair_toggle_btn.setEnabled(False)
         self.crosshair_toggle_btn.setToolTip("Toggle crosshair visibility")
         self.crosshair_toggle_btn.clicked.connect(self.workspace.set_show_crosshair)
+        
         self.window_preset_combo = QComboBox()
         self.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
         self.window_preset_combo.currentTextChanged.connect(self.workspace.set_window_preset)
@@ -1942,10 +1948,19 @@ class GUI(QMainWindow):
         tip = np.asarray(self.results[row]["tip"], dtype=float)
         self.workspace.jump_to_world_point(((entry + tip) / 2.0).tolist())
         self.tabs.setCurrentIndex(0)
+        if getattr(self, "visualizer_window", None) is not None:
+            try:
+                self.visualizer_window.set_active_screw(row)
+            except Exception as exc:
+                print(f"DEBUG: Sync selection to visualizer failed: {exc}")
 
     def visualize(self):
         if self.verts is None or self.faces is None or not self.results:
-            print("ERROR: Run planning before visualization.")
+            QMessageBox.warning(
+                self,
+                "Manual 3D View",
+                "Run planning first so mesh and screw results are available.",
+            )
             return
         try:
             combined_seg = self.combined_seg_path or self.seg_path
@@ -1958,9 +1973,23 @@ class GUI(QMainWindow):
                 segmentation_path=combined_seg,
                 seg_folder=seg_folder,
             )
-            show()
+            self.visualizer_window = show()
+            self.visualizer_window.plan_adjusted.connect(self.handle_visualizer_adjustment)
         except Exception as exc:
-            print(f"VISUALIZER ERROR: {exc}")
+            import traceback
+
+            traceback.print_exc()
+            QMessageBox.critical(
+                self,
+                "Manual 3D View",
+                f"Could not open Manual Screw Visualizer V8:\n\n{exc}",
+            )
+
+    def handle_visualizer_adjustment(self, updated_results):
+        self.results = updated_results
+        self.populate_table_from_results()
+        self.workspace.set_results(updated_results)
+        self.workspace.update_mpr_views()
 
     def resolve_saved_path(self, saved_path, plan_dir):
         if not saved_path:
@@ -2187,7 +2216,7 @@ if __name__ == "__main__":
     app.processEvents()
     splash.setPixmap(create_splash_pixmap(1.0, "Ready", APP_TITLE))
     app.processEvents()
-    time.sleep(0.6)
+    time.sleep(3.0)
     window.show()
     splash.finish(window)
     sys.exit(app.exec())
