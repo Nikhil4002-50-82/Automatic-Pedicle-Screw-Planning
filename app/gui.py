@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QComboBox,
     QPushButton,
@@ -708,6 +709,85 @@ class SliceView(QWidget):
         self.draw_annotations(painter)
         painter.end()
 
+    def draw_screws(self, painter):
+        if not self.results or self.affine is None:
+            return
+        
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        
+        for result in self.results:
+            entry_world = result.get("entry")
+            tip_world = result.get("tip")
+            if entry_world is None or tip_world is None:
+                continue
+                
+            entry_vox = world_to_voxel(entry_world, self.affine)
+            tip_vox = world_to_voxel(tip_world, self.affine)
+            
+            start_x, start_y = self.voxel_to_widget(entry_vox)
+            end_x, end_y = self.voxel_to_widget(tip_vox)
+            
+            side = str(result.get("side", "")).strip().lower()
+            if side.startswith("l"):
+                color = QColor("#38bdf8")
+            elif side.startswith("r"):
+                color = QColor("#f59e0b")
+            else:
+                color = QColor("#2dd4bf")
+                
+            if "screw_color" in result:
+                color = QColor(result["screw_color"])
+            elif "trajectory_color" in result:
+                color = QColor(result["trajectory_color"])
+            
+            selected_idx = {"Axial": 2, "Coronal": 1, "Sagittal": 0}[self.axis]
+            curr_slice = self.coord[selected_idx]
+            min_slice = min(entry_vox[selected_idx], tip_vox[selected_idx])
+            max_slice = max(entry_vox[selected_idx], tip_vox[selected_idx])
+            
+            opacity = 255
+            if not (min_slice - 1 <= curr_slice <= max_slice + 1):
+                opacity = 60
+                
+            color.setAlpha(opacity)
+            
+            # Draw halo (thick soft line)
+            halo_color = QColor(color)
+            halo_color.setAlpha(int(opacity * 0.3))
+            halo_pen = QPen(halo_color)
+            halo_pen.setWidth(6)
+            halo_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(halo_pen)
+            painter.drawLine(int(round(start_x)), int(round(start_y)), int(round(end_x)), int(round(end_y)))
+            
+            # Draw main line
+            main_pen = QPen(color)
+            main_pen.setWidth(2)
+            if opacity == 60:
+                main_pen.setStyle(Qt.PenStyle.DashLine)
+            else:
+                main_pen.setStyle(Qt.PenStyle.SolidLine)
+            main_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(main_pen)
+            painter.drawLine(int(round(start_x)), int(round(start_y)), int(round(end_x)), int(round(end_y)))
+            
+            # Draw endpoints
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(int(round(start_x)) - 3, int(round(start_y)) - 3, 6, 6)
+            painter.drawEllipse(int(round(end_x)) - 3, int(round(end_y)) - 3, 6, 6)
+            
+            # Label
+            if opacity == 255:
+                label_pen = QPen(color)
+                painter.setPen(label_pen)
+                font = painter.font()
+                font.setPointSize(8)
+                font.setBold(True)
+                painter.setFont(font)
+                label = f"{result.get('vertebra', '')} {result.get('side', '')}"
+                painter.drawText(int(round(start_x)) + 8, int(round(start_y)) - 4, label)
+
     def draw_annotations(self, painter):
         painter.setPen(QPen(QColor("#facc15"), 3))
         painter.setBrush(QColor(250, 204, 21, 95))
@@ -790,6 +870,40 @@ class Mesh3DView(QWidget):
         self.plotter.render()
 
 
+class DeletableListItemWidget(QWidget):
+    def __init__(self, text, index, on_delete, on_select, parent=None):
+        super().__init__(parent)
+        self.index = index
+        self.on_delete = on_delete
+        self.on_select = on_select
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(4)
+        
+        self.label = QLabel(text)
+        self.label.setStyleSheet("background: transparent; color: #e5e7eb; font-weight: 500;")
+        # Handle click/selection manually if the label is clicked
+        self.label.mousePressEvent = self.label_clicked
+        
+        self.delete_btn = QPushButton("×")
+        self.delete_btn.setFixedSize(18, 18)
+        self.delete_btn.setStyleSheet(
+            "QPushButton { background: #3b4252; color: #ef4444; border: none; font-weight: 900; font-size: 13px; border-radius: 9px; padding: 0; }"
+            "QPushButton:hover { background: #ef4444; color: white; }"
+        )
+        self.delete_btn.clicked.connect(self.delete_clicked)
+        
+        layout.addWidget(self.label, 1)
+        layout.addWidget(self.delete_btn)
+        
+    def label_clicked(self, event):
+        self.on_select(self.index)
+        
+    def delete_clicked(self):
+        self.on_delete(self.index)
+
+
 class FourViewWorkspace(QWidget):
     annotation_added = pyqtSignal(dict)
     show_crosshair_changed = pyqtSignal(bool)
@@ -800,11 +914,11 @@ class FourViewWorkspace(QWidget):
         self.seg_data = None
         self.affine = None
         self.coord = [0, 0, 0]
-        self.opacity = 0.45
+        self.opacity = 1.0
         self.results = []
         self.label_meshes = []
-        self.mesh_opacity = 0.35
-        self.window_preset = "Auto"
+        self.mesh_opacity = 1.0
+        self.window_preset = "Soft Tissue"
         self.annotation_mode = False
         self.annotations = []
         self.selected_label = None
@@ -825,36 +939,46 @@ class FourViewWorkspace(QWidget):
         top = QHBoxLayout()
         self.coord_label = QLabel("Coordinate: none")
         self.coord_label.setStyleSheet("font-weight: 800; color: #d1d5db;")
+        top.addWidget(self.coord_label)
+        top.addStretch(1)
+        root.addLayout(top)
+
         self.annotation_btn = QPushButton("Add Annotation")
         apply_icon(self.annotation_btn, "fa5s.map-marker-alt")
         self.annotation_btn.setCheckable(True)
         self.annotation_btn.clicked.connect(self.toggle_annotation_mode)
-        top.addWidget(self.coord_label)
-        top.addStretch(1)
-        top.addWidget(QLabel("Overlay opacity"))
+
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setValue(45)
+        self.opacity_slider.setValue(100)
         self.opacity_slider.valueChanged.connect(self.set_opacity)
-        self.opacity_value = QLabel("45%")
-        top.addWidget(self.opacity_slider)
-        top.addWidget(self.opacity_value)
-        top.addWidget(QLabel("Mesh opacity"))
+        self.opacity_value = QLabel("100%")
+
+        # Mesh opacity inside 3D mesh view
+        self.mesh_opacity_container = QWidget()
+        self.mesh_opacity_container.setStyleSheet("background: transparent;")
+        moc_layout = QHBoxLayout(self.mesh_opacity_container)
+        moc_layout.setContentsMargins(0, 0, 0, 0)
+        moc_lbl = QLabel("Mesh opacity")
+        moc_lbl.setStyleSheet("font-size: 11px; font-weight: 800; color: #cbd5e1;")
+        moc_layout.addWidget(moc_lbl)
         self.mesh_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.mesh_opacity_slider.setRange(5, 100)
-        self.mesh_opacity_slider.setValue(35)
+        self.mesh_opacity_slider.setValue(100)
+        self.mesh_opacity_slider.setFixedWidth(100)
         self.mesh_opacity_slider.valueChanged.connect(self.set_mesh_opacity)
-        self.mesh_opacity_value = QLabel("35%")
-        top.addWidget(self.mesh_opacity_slider)
-        top.addWidget(self.mesh_opacity_value)
+        self.mesh_opacity_value = QLabel("100%")
+        self.mesh_opacity_value.setStyleSheet("font-size: 11px; font-weight: 800; color: #cbd5e1;")
+        self.mesh_opacity_value.setFixedWidth(35)
+        moc_layout.addWidget(self.mesh_opacity_slider)
+        moc_layout.addWidget(self.mesh_opacity_value)
+        self.mesh_opacity_container.hide()
+
         self.fill_views_btn = QPushButton("Fill views")
         self.fill_views_btn.setCheckable(True)
         self.fill_views_btn.setChecked(True)
         self.fill_views_btn.setToolTip("Fill each MPR panel by preserving aspect ratio and cropping only when needed")
         self.fill_views_btn.clicked.connect(self.set_fill_views)
-        top.addWidget(self.fill_views_btn)
-        top.addWidget(self.annotation_btn)
-        root.addLayout(top)
 
         self.close_expand_btn = QPushButton("Close Expanded View")
         apply_icon(self.close_expand_btn, "fa5s.compress")
@@ -921,6 +1045,7 @@ class FourViewWorkspace(QWidget):
         mesh_expand_btn.clicked.connect(lambda: self.expand_view("3D"))
         mesh_header.addWidget(mesh_title)
         mesh_header.addStretch(1)
+        mesh_header.addWidget(self.mesh_opacity_container)
         mesh_header.addWidget(mesh_expand_btn)
         self.mesh_view = Mesh3DView()
         mesh_layout.addWidget(mesh_header_widget)
@@ -1001,6 +1126,8 @@ class FourViewWorkspace(QWidget):
         selected = self.view_boxes[axis]
         self.grid.addWidget(selected, 0, 0, 2, 2)
         selected.show()
+        if axis == "3D":
+            self.mesh_opacity_container.show()
         self.set_expand_button_mode(axis, close_mode=True)
         self.update_mpr_views()
 
@@ -1014,6 +1141,7 @@ class FourViewWorkspace(QWidget):
             row, col = self.view_positions[key]
             self.grid.addWidget(box, row, col)
             box.show()
+        self.mesh_opacity_container.hide()
         self.expanded_axis = None
         self.set_expand_button_mode(expanded_axis, close_mode=False)
         self.update_mpr_views()
@@ -1197,8 +1325,27 @@ class FourViewWorkspace(QWidget):
         shape = self.current_shape()
         if shape is None:
             return
+        hu_text = ""
+        if self.ct_data is not None:
+            try:
+                hu_val = self.ct_data[self.coord[0], self.coord[1], self.coord[2]]
+                classification = "Air"
+                if hu_val > 700:
+                    classification = "Cortical Bone"
+                elif hu_val > 250:
+                    classification = "Cancellous Bone"
+                elif hu_val > 100:
+                    classification = "Osteopenic Bone"
+                elif hu_val > 0:
+                    classification = "Soft Tissue"
+                else:
+                    classification = "Air / Fat"
+                hu_text = f" | HU Density: {hu_val:.1f} ({classification})"
+            except Exception:
+                pass
+        
         label_text = f" | label={self.selected_label}" if self.selected_label is not None else ""
-        self.coord_label.setText(f"Voxel coordinate: i={self.coord[0]}  j={self.coord[1]}  k={self.coord[2]}{label_text}")
+        self.coord_label.setText(f"Voxel: i={self.coord[0]} j={self.coord[1]} k={self.coord[2]}{label_text}{hu_text}")
         for axis, view in self.views.items():
             base = slice_for_axis(self.ct_data if self.ct_data is not None else self.seg_data, axis, self.coord)
             seg = slice_for_axis(self.seg_data, axis, self.coord) if self.seg_data is not None else None
@@ -1440,21 +1587,13 @@ class GUI(QMainWindow):
         self.seg_list = QListWidget()
         self.seg_list.setMinimumHeight(95)
         self.seg_list.itemClicked.connect(self.seg_item_clicked)
-        remove_ct_btn = QPushButton("Remove CT")
-        apply_icon(remove_ct_btn, "fa5s.undo")
-        remove_ct_btn.clicked.connect(self.remove_selected_ct)
-        remove_seg_btn = QPushButton("Remove Seg")
-        apply_icon(remove_seg_btn, "fa5s.undo")
-        remove_seg_btn.clicked.connect(self.remove_selected_seg)
         load_files_layout.addWidget(load_ct_btn)
         load_files_layout.addWidget(load_seg_btn)
         load_files_layout.addWidget(load_plan_btn)
         load_files_layout.addWidget(QLabel("Loaded CTs"))
         load_files_layout.addWidget(self.ct_list)
-        load_files_layout.addWidget(remove_ct_btn)
         load_files_layout.addWidget(QLabel("Loaded Segmentations"))
         load_files_layout.addWidget(self.seg_list)
-        load_files_layout.addWidget(remove_seg_btn)
         load_files_layout.addStretch(1)
         self.actions_tabs.addTab(build_actions_scroll_page(load_files_host), "Load Files")
 
@@ -1472,10 +1611,37 @@ class GUI(QMainWindow):
         
         self.window_preset_combo = QComboBox()
         self.window_preset_combo.addItems(list(WINDOW_PRESETS.keys()))
+        self.window_preset_combo.setCurrentText("Soft Tissue")
         self.window_preset_combo.currentTextChanged.connect(self.workspace.set_window_preset)
         planning_layout.addWidget(QLabel("Window preset"))
         planning_layout.addWidget(self.window_preset_combo)
+
+        # Quick-Jump Vertebra Level Selector
+        jump_group = QGroupBox("Vertebra Quick Navigator")
+        jump_layout = QHBoxLayout(jump_group)
+        jump_layout.setContentsMargins(6, 12, 6, 8)
+        jump_layout.setSpacing(6)
+        self.jump_buttons = {}
+        for label_val, name in [(5, "L1"), (4, "L2"), (3, "L3"), (2, "L4"), (1, "L5")]:
+            btn = QPushButton(name)
+            btn.setStyleSheet(
+                "QPushButton { background: #262d37; color: #cbd5e1; border: 1px solid #3f4a59; border-radius: 4px; padding: 6px 4px; font-weight: 800; font-size: 11px; }"
+                "QPushButton:hover { background: #0f766e; color: white; border: 1px solid #14b8a6; }"
+            )
+            btn.clicked.connect(lambda _, l=label_val: self.jump_to_label_center(l))
+            jump_layout.addWidget(btn)
+            self.jump_buttons[label_val] = btn
+        planning_layout.addWidget(jump_group)
         planning_layout.addWidget(self.crosshair_toggle_btn)
+        
+        planning_layout.addWidget(QLabel("Overlay opacity"))
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(self.workspace.opacity_slider, 1)
+        opacity_row.addWidget(self.workspace.opacity_value)
+        planning_layout.addLayout(opacity_row)
+        
+        planning_layout.addWidget(self.workspace.fill_views_btn)
+        
         planning_layout.addWidget(self.run_btn)
         planning_layout.addWidget(self.visual_btn)
         planning_layout.addStretch(1)
@@ -1488,15 +1654,8 @@ class GUI(QMainWindow):
         self.annotation_list = QListWidget()
         self.annotation_list.setMinimumHeight(140)
         self.annotation_list.itemClicked.connect(self.annotation_item_clicked)
-        load_ann_btn = QPushButton("Load Annotations JSON")
-        apply_icon(load_ann_btn, "fa5s.file-import")
-        load_ann_btn.clicked.connect(self.load_annotations)
-        save_ann_btn = QPushButton("Save Annotations JSON")
-        apply_icon(save_ann_btn, "fa5s.save")
-        save_ann_btn.clicked.connect(self.save_annotations)
         annotation_layout.addWidget(self.annotation_list)
-        annotation_layout.addWidget(load_ann_btn)
-        annotation_layout.addWidget(save_ann_btn)
+        annotation_layout.addWidget(self.workspace.annotation_btn)
         annotation_layout.addStretch(1)
         self.actions_tabs.addTab(build_actions_scroll_page(annotation_host), "Annotation")
 
@@ -1650,27 +1809,107 @@ class GUI(QMainWindow):
         visible = self.actions_toggle_btn.isChecked()
         self.actions_panel.setVisible(visible)
 
+    def select_ct_by_index(self, index):
+        self.set_active_ct(index)
+        
+    def jump_to_label_center(self, label):
+        shape = self.workspace.current_shape()
+        if self.workspace.seg_data is None or shape is None:
+            return
+        label = int(label)
+        if label not in self.workspace.label_centroid_cache:
+            points = np.argwhere(np.asarray(self.workspace.seg_data).round().astype(np.int32) == label)
+            self.workspace.label_centroid_cache[label] = None if points.size == 0 else np.floor(points.mean(axis=0) + 0.5).astype(int)
+        center = self.workspace.label_centroid_cache[label]
+        if center is not None:
+            self.workspace.jump_to_voxel(center)
+        
+    def select_seg_by_index(self, index):
+        self.set_active_seg(index)
+        
+    def remove_ct_by_index(self, index):
+        if index is None or index < 0 or index >= len(self.ct_records):
+            return
+        del self.ct_records[index]
+        for seg in self.seg_records:
+            mapped = seg.get("ct_index")
+            if mapped == index:
+                seg["ct_index"] = None
+            elif mapped is not None and mapped > index:
+                seg["ct_index"] = mapped - 1
+        self.active_ct_index = 0 if self.ct_records else None
+        self.active_seg_index = None
+        if self.active_ct_index is not None:
+            self.set_active_ct(self.active_ct_index)
+        else:
+            self.ct_data = None
+            self.seg_data = None
+            self.ct_label.setText("CT: not loaded")
+            self.seg_label.setText("Segmentation: not loaded")
+            self.workspace.set_volumes(None, None, None)
+            self.workspace.set_mesh([])
+            self.refresh_case_lists()
+            
+    def remove_seg_by_index(self, index):
+        if index is None or index < 0 or index >= len(self.seg_records):
+            return
+        del self.seg_records[index]
+        self.active_seg_index = None
+        if self.active_ct_index is not None:
+            self.set_active_ct(self.active_ct_index)
+        else:
+            self.seg_path = None
+            self.combined_seg_path = None
+            self.seg_data = None
+            self.workspace.set_mesh([])
+            self.seg_label.setText("Segmentation: not loaded")
+            self.refresh_case_lists()
+
     def refresh_case_lists(self):
         self.ct_list.blockSignals(True)
         self.seg_list.blockSignals(True)
         self.ct_list.clear()
         self.seg_list.clear()
+        
         for index, record in enumerate(self.ct_records):
+            item = QListWidgetItem(self.ct_list)
+            item.setSizeHint(QSize(0, 28))
+            item.setData(Qt.ItemDataRole.UserRole, index)
             prefix = "* " if index == self.active_ct_index else "  "
-            self.ct_list.addItem(f"{prefix}{os.path.basename(record['path'])}")
-            self.ct_list.item(self.ct_list.count() - 1).setData(Qt.ItemDataRole.UserRole, index)
+            text = f"{prefix}{os.path.basename(record['path'])}"
+            widget = DeletableListItemWidget(
+                text,
+                index,
+                on_delete=self.remove_ct_by_index,
+                on_select=self.select_ct_by_index
+            )
+            self.ct_list.addItem(item)
+            self.ct_list.setItemWidget(item, widget)
+            
         for index, record in enumerate(self.seg_records):
+            item = QListWidgetItem(self.seg_list)
+            item.setSizeHint(QSize(0, 28))
+            item.setData(Qt.ItemDataRole.UserRole, index)
             mapped = record.get("ct_index")
             mapped_name = "unmapped"
             if mapped is not None and 0 <= mapped < len(self.ct_records):
                 mapped_name = os.path.basename(self.ct_records[mapped]["path"])
             prefix = "* " if index == self.active_seg_index else "  "
-            self.seg_list.addItem(f"{prefix}{os.path.basename(record['path'])} -> {mapped_name}")
-            self.seg_list.item(self.seg_list.count() - 1).setData(Qt.ItemDataRole.UserRole, index)
+            text = f"{prefix}{os.path.basename(record['path'])} -> {mapped_name}"
+            widget = DeletableListItemWidget(
+                text,
+                index,
+                on_delete=self.remove_seg_by_index,
+                on_select=self.select_seg_by_index
+            )
+            self.seg_list.addItem(item)
+            self.seg_list.setItemWidget(item, widget)
+            
         if self.active_ct_index is not None and self.active_ct_index < self.ct_list.count():
             self.ct_list.setCurrentRow(self.active_ct_index)
         if self.active_seg_index is not None and self.active_seg_index < self.seg_list.count():
             self.seg_list.setCurrentRow(self.active_seg_index)
+            
         self.ct_list.blockSignals(False)
         self.seg_list.blockSignals(False)
 
@@ -1725,11 +1964,27 @@ class GUI(QMainWindow):
     def set_active_ct(self, index):
         if index is None or index < 0 or index >= len(self.ct_records):
             return
+            
+        # Save current workspace annotations and results to the previous active CT record
+        if self.active_ct_index is not None and self.active_ct_index < len(self.ct_records):
+            prev_record = self.ct_records[self.active_ct_index]
+            prev_record["annotations"] = list(self.workspace.annotations)
+            prev_record["results"] = list(self.results)
+            
         self.active_ct_index = index
         record = self.ct_records[index]
         self.ct_path = record["path"]
         self.ct_data = record["data"]
         self.affine = record["affine"]
+        
+        # Load new annotations and results
+        self.workspace.annotations = record.setdefault("annotations", [])
+        self.results = record.setdefault("results", [])
+        
+        # Refresh the UI widgets to reflect loaded state
+        self.refresh_annotation_list()
+        self.populate_table_from_results()
+        
         mapped = [i for i, seg in enumerate(self.seg_records) if seg.get("ct_index") == index]
         self.active_seg_index = mapped[0] if mapped else None
         if mapped:
@@ -1752,6 +2007,7 @@ class GUI(QMainWindow):
             self.seg_label.setText("Segmentation: not mapped")
         self.ct_label.setText(f"CT: {os.path.basename(self.ct_path)}")
         self.workspace.set_volumes(self.ct_data, self.seg_data, self.affine)
+        self.workspace.set_results(self.results)
         self.refresh_case_lists()
 
     def set_active_seg(self, index):
@@ -2046,6 +2302,10 @@ class GUI(QMainWindow):
         self.refresh_annotation_list()
         self.populate_table_from_results()
         self.workspace.set_results(self.results)
+        if self.active_ct_index is not None and self.active_ct_index < len(self.ct_records):
+            record = self.ct_records[self.active_ct_index]
+            record["annotations"] = list(self.workspace.annotations)
+            record["results"] = list(self.results)
         self.visual_btn.setEnabled(bool(self.results and self.verts is not None and self.faces is not None))
         self.status_label.setText(f"Status: loaded plan ({len(self.results)} screws)")
         self.tabs.setCurrentIndex(0)
@@ -2077,6 +2337,9 @@ class GUI(QMainWindow):
         self.results = results
         self.populate_table_from_results()
         self.workspace.set_results(self.results)
+        if self.active_ct_index is not None and self.active_ct_index < len(self.ct_records):
+            record = self.ct_records[self.active_ct_index]
+            record["results"] = list(self.results)
         self.visual_btn.setEnabled(bool(self.results and self.verts is not None and self.faces is not None))
         self.status_label.setText(f"Status: loaded CSV plan ({len(self.results)} screws)")
         self.tabs.setCurrentIndex(1)

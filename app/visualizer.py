@@ -9,6 +9,7 @@ import numpy as np
 from skimage.measure import marching_cubes
 
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QImage, QPainter, QPen, QPixmap, QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -27,6 +28,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QStyle,
+    QProgressBar,
 )
 
 try:
@@ -117,7 +119,7 @@ def rodrigues_rotate(vector, axis, angle_deg):
     )
 
 
-def load_and_transform_screw(entry, tip, diameter, length):
+def load_and_transform_screw(entry, tip, diameter, length, catalog_type="Generic"):
     """
     Procedurally creates a highly realistic medical pedicle screw featuring:
     1. Polyaxial Tool Head Assembly (Spherical base joint + Slotted Tulip housing)
@@ -134,8 +136,27 @@ def load_and_transform_screw(entry, tip, diameter, length):
         return None
 
     # --- 1. HEAD ASSEMBLY (POLYAXIAL TULIP + SPHERE) ---
-    head_diameter = diameter * 1.6
-    tulip_length = 10.0
+    if catalog_type == "Stryker":
+        thread_pitch = 1.5
+        thread_outward_depth = diameter * 0.14
+        head_diameter = diameter * 1.5
+        tulip_length = 8.5
+    elif catalog_type == "Medtronic":
+        thread_pitch = 1.75
+        thread_outward_depth = diameter * 0.12
+        head_diameter = diameter * 1.6
+        tulip_length = 10.0
+    elif catalog_type == "Globus":
+        thread_pitch = 2.0
+        thread_outward_depth = diameter * 0.16
+        head_diameter = diameter * 1.7
+        tulip_length = 11.5
+    else:
+        thread_pitch = 1.75
+        thread_outward_depth = diameter * 0.12
+        head_diameter = diameter * 1.6
+        tulip_length = 10.0
+
     sphere_radius = (diameter * 1.3) / 2.0
     
     # Spherical polyaxial base exactly at entry point
@@ -189,10 +210,8 @@ def load_and_transform_screw(entry, tip, diameter, length):
 
     # --- 3. PROCEDURAL HELICAL THREAD PITCH ---
     # Stack high-frequency micro-rings along the bone shaft to simulate realistic thread crests
-    thread_pitch = 1.75  # mm per thread turn
     num_threads = int(bone_shaft_length / thread_pitch)
     thread_crest_thickness = 0.45
-    thread_outward_depth = diameter * 0.12  # how far threads cut past the core radius
 
     for i in range(num_threads):
         distance_along = pedicle_zone_len * 0.3 + (i * thread_pitch)
@@ -472,6 +491,18 @@ class ManualVisualizerWindow(QMainWindow):
         self.level_summary_label = None
         self.mesh_opacity_value_label = None
         self._updating_screw_combo = False
+
+        # Load CT Volume
+        self.volume_data = None
+        self.volume_affine = None
+        if self.volume_path and os.path.exists(self.volume_path):
+            try:
+                self.volume_nii = nib.load(self.volume_path)
+                self.volume_data = self.volume_nii.get_fdata()
+                self.volume_affine = self.volume_nii.affine
+            except Exception as e:
+                print(f"Error loading volume in visualizer: {e}")
+
         self.states = [
             {
                 "lr_mm": 0.0,
@@ -480,6 +511,7 @@ class ManualVisualizerWindow(QMainWindow):
                 "sagittal_deg": 0.0,
                 "length_mm": 0.0,
                 "diameter": float(res.get("diameter", 5.5) or 5.5),
+                "catalog_type": "Generic",
             }
             for res in self.original_results
         ]
@@ -489,7 +521,7 @@ class ManualVisualizerWindow(QMainWindow):
         self.refresh_scene()
         if self.plotter is not None:
             self.plotter.add_axes(line_width=1, color="#94a3b8")
-        self.refresh_screws()
+        self.refresh_screws(force_all=True)
         self.update_status()
         self.update_values_panel()
 
@@ -506,9 +538,8 @@ class ManualVisualizerWindow(QMainWindow):
             missing.setStyleSheet("background: #171b22; color: #f59e0b; font-size: 16px; font-weight: 800;")
             root.addWidget(missing, 1)
         else:
-            self.plotter = QtInteractor(container)
-            self.plotter.set_background("#151a21")
-            root.addWidget(self.plotter.interactor, 1)
+            self.plotter = None
+            self._current_plotter_shape = None
 
         panel = QWidget()
         panel.setFixedWidth(400)
@@ -569,6 +600,68 @@ class ManualVisualizerWindow(QMainWindow):
         sidebar_tabs = QTabWidget()
         sidebar_tabs.setDocumentMode(True)
 
+        # Bone Quality Sidebar Tab (Relocated HUD dashboard)
+        bone_quality_host = QWidget()
+        bq_tab_layout = QVBoxLayout(bone_quality_host)
+        bq_tab_layout.setContentsMargins(4, 8, 4, 8)
+        bq_tab_layout.setSpacing(10)
+
+        # 1. Bone Quality Classification Badge
+        self.bone_quality_badge = QLabel("CLASSIFYING...")
+        self.bone_quality_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.bone_quality_badge.setStyleSheet(
+            "font-size: 13px; font-weight: 900; color: white; background: #3b4252; padding: 10px; border-radius: 6px;"
+        )
+        bq_tab_layout.addWidget(self.bone_quality_badge)
+
+        # 2. Hounsfield Units Progress Group
+        hu_group = QWidget()
+        hu_layout = QVBoxLayout(hu_group)
+        hu_layout.setContentsMargins(0, 0, 0, 0)
+        hu_layout.setSpacing(4)
+        hu_lbl = QLabel("Bone Density (Hounsfield Units)")
+        hu_lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #cbd5e1;")
+        hu_layout.addWidget(hu_lbl)
+        self.hu_progress = QProgressBar()
+        self.hu_progress.setRange(-200, 1000)
+        self.hu_progress.setValue(0)
+        self.hu_progress.setFormat("%v HU")
+        self.hu_progress.setStyleSheet(
+            "QProgressBar { border: 1px solid #3f4a59; border-radius: 4px; text-align: center; color: white; background: #0d1117; height: 24px; font-weight: 800; }"
+            "QProgressBar::chunk { background-color: #0f766e; border-radius: 3px; }"
+        )
+        hu_layout.addWidget(self.hu_progress)
+        bq_tab_layout.addWidget(hu_group)
+
+        # 3. Pullout Strength Progress Group
+        po_group = QWidget()
+        po_layout = QVBoxLayout(po_group)
+        po_layout.setContentsMargins(0, 0, 0, 0)
+        po_layout.setSpacing(4)
+        po_lbl = QLabel("Estimated Pullout Strength")
+        po_lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #cbd5e1;")
+        po_layout.addWidget(po_lbl)
+        self.po_progress = QProgressBar()
+        self.po_progress.setRange(0, 3000)
+        self.po_progress.setValue(0)
+        self.po_progress.setFormat("%v N")
+        self.po_progress.setStyleSheet(
+            "QProgressBar { border: 1px solid #3f4a59; border-radius: 4px; text-align: center; color: white; background: #0d1117; height: 24px; font-weight: 800; }"
+            "QProgressBar::chunk { background-color: #f59e0b; border-radius: 3px; }"
+        )
+        po_layout.addWidget(self.po_progress)
+        bq_tab_layout.addWidget(po_group)
+
+        # 4. Clinical Recommendation Alert
+        self.recommendation_box = QLabel("Evaluating screw track...")
+        self.recommendation_box.setWordWrap(True)
+        self.recommendation_box.setStyleSheet(
+            "padding: 12px; border-radius: 6px; background: #1e293b; color: #cbd5e1; font-size: 11px; line-height: 1.4; border: 1px solid #334155;"
+        )
+        bq_tab_layout.addWidget(self.recommendation_box)
+        bq_tab_layout.addStretch(1)
+
+        # Plan Sidebar Tab
         plan_host = QWidget()
         values_layout = QVBoxLayout(plan_host)
         values_layout.setContentsMargins(4, 8, 4, 8)
@@ -639,6 +732,8 @@ class ManualVisualizerWindow(QMainWindow):
         values_layout.addWidget(delta_box)
         values_layout.addWidget(self.level_summary_label)
         values_layout.addStretch(1)
+
+        sidebar_tabs.addTab(build_scroll_tab(bone_quality_host), "Bone Quality")
         sidebar_tabs.addTab(build_scroll_tab(plan_host), "Plan")
 
         adjust_host = QWidget()
@@ -652,17 +747,23 @@ class ManualVisualizerWindow(QMainWindow):
         preset_grid.setHorizontalSpacing(8)
         preset_grid.setVerticalSpacing(8)
 
-        preset_grid.addWidget(QLabel("Diameter (mm):"), 0, 0)
+        preset_grid.addWidget(QLabel("Catalog Preset:"), 0, 0)
+        self.preset_catalog_combo = QComboBox()
+        self.preset_catalog_combo.addItems(["Generic", "Stryker", "Medtronic", "Globus"])
+        self.preset_catalog_combo.currentTextChanged.connect(self.preset_catalog_changed)
+        preset_grid.addWidget(self.preset_catalog_combo, 0, 1)
+
+        preset_grid.addWidget(QLabel("Diameter (mm):"), 1, 0)
         self.preset_diam_combo = QComboBox()
         self.preset_diam_combo.addItems(["4.5", "5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0"])
         self.preset_diam_combo.currentTextChanged.connect(self.preset_diameter_changed)
-        preset_grid.addWidget(self.preset_diam_combo, 0, 1)
+        preset_grid.addWidget(self.preset_diam_combo, 1, 1)
 
-        preset_grid.addWidget(QLabel("Length (mm):"), 1, 0)
+        preset_grid.addWidget(QLabel("Length (mm):"), 2, 0)
         self.preset_len_combo = QComboBox()
         self.preset_len_combo.addItems(["30", "35", "40", "45", "50", "55", "60"])
         self.preset_len_combo.currentTextChanged.connect(self.preset_length_changed)
-        preset_grid.addWidget(self.preset_len_combo, 1, 1)
+        preset_grid.addWidget(self.preset_len_combo, 2, 1)
 
         adjust_layout.addWidget(preset_box)
 
@@ -735,6 +836,36 @@ class ManualVisualizerWindow(QMainWindow):
         self.setCentralWidget(container)
         self.resize(1480, 920)
 
+    @property
+    def subplot_indices(self):
+        if getattr(self, "_current_plotter_shape", (2, 2)) == (1, 1):
+            return [(0, 0)]
+        return [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+    def ensure_plotter_shape(self):
+        if QtInteractor is None:
+            return
+        expected_shape = (1, 1) if self.selected_vertebra is None else (2, 2)
+        current_shape = getattr(self, "_current_plotter_shape", None)
+        if current_shape == expected_shape and self.plotter is not None:
+            return
+            
+        if self.plotter is not None:
+            layout = self.central_widget.layout()
+            if layout is not None:
+                layout.removeWidget(self.plotter.interactor)
+            self.plotter.close()
+            self.plotter = None
+            
+        self.plotter = QtInteractor(self.central_widget, shape=expected_shape)
+        self._current_plotter_shape = expected_shape
+        self.plotter.set_background("#151a21")
+        
+        layout = self.central_widget.layout()
+        if layout is not None:
+            layout.insertWidget(0, self.plotter.interactor, 1)
+        self.plotter.add_axes(line_width=1, color="#94a3b8")
+
     def mesh_opacity_changed(self, value):
         self.mesh_opacity = value / 100.0
         self.mesh_opacity_value_label.setText(f"{value}%")
@@ -769,7 +900,7 @@ class ManualVisualizerWindow(QMainWindow):
         self.selected_vertebra = self.vertebra_combo.currentData()
         self.rebuild_screw_combo()
         self.refresh_scene()
-        self.refresh_screws()
+        self.refresh_screws(force_all=True)
         self.update_status()
         self.update_values_panel()
         self.focus_camera()
@@ -783,7 +914,7 @@ class ManualVisualizerWindow(QMainWindow):
         self.load_slider_state()
         self.update_status()
         self.update_values_panel()
-        self.refresh_screws()
+        self.refresh_screws(force_all=True)
 
     def set_active_screw(self, index):
         if index < 0 or index >= len(self.original_results):
@@ -800,7 +931,7 @@ class ManualVisualizerWindow(QMainWindow):
         self.load_slider_state()
         self.update_status()
         self.update_values_panel()
-        self.refresh_screws()
+        self.refresh_screws(force_all=True)
 
     def mesh_for_vertebra(self, level):
         if level in self.vertebra_meshes:
@@ -814,52 +945,59 @@ class ManualVisualizerWindow(QMainWindow):
         if self.plotter is None:
             return
         for name in self.mesh_actor_names:
-            self.plotter.remove_actor(name, reset_camera=False)
+            for r, c in self.subplot_indices:
+                self.plotter.subplot(r, c)
+                self.plotter.remove_actor(name, reset_camera=False)
         self.mesh_actor_names = []
 
     def refresh_scene(self):
+        self.ensure_plotter_shape()
         if self.plotter is None:
             return
         self.clear_mesh_actors()
         if self.selected_vertebra is None:
             mesh = polydata_from_triangles(self.verts_world, self.faces)
             if mesh is not None:
-                self.plotter.add_mesh(
-                    mesh,
-                    color="#cbd5e1",
-                    opacity=self.mesh_opacity,
-                    smooth_shading=True,
-                    specular=0.25,
-                    name="vertebra_mesh_all",
-                )
+                for r, c in self.subplot_indices:
+                    self.plotter.subplot(r, c)
+                    self.plotter.add_mesh(
+                        mesh,
+                        color="#cbd5e1",
+                        opacity=self.mesh_opacity,
+                        smooth_shading=True,
+                        specular=0.25,
+                        name="vertebra_mesh_all",
+                    )
                 self.mesh_actor_names.append("vertebra_mesh_all")
         else:
             verts, faces = self.mesh_for_vertebra(self.selected_vertebra)
             mesh = polydata_from_triangles(verts, faces) if verts is not None else None
             if mesh is not None:
                 scalars = self.compute_mesh_safety_scalars(verts, self.selected_vertebra)
-                if scalars is not None:
-                    mesh.point_data["Safety"] = scalars
-                    self.plotter.add_mesh(
-                        mesh,
-                        scalars="Safety",
-                        cmap=["#ef4444", "#f59e0b", "#94a3b8"],
-                        clim=[-1.0, 2.0],
-                        opacity=self.mesh_opacity,
-                        smooth_shading=True,
-                        specular=0.3,
-                        name=f"vertebra_mesh_{self.selected_vertebra}",
-                        show_scalar_bar=False,
-                    )
-                else:
-                    self.plotter.add_mesh(
-                        mesh,
-                        color="#cbd5e1",
-                        opacity=self.mesh_opacity,
-                        smooth_shading=True,
-                        specular=0.3,
-                        name=f"vertebra_mesh_{self.selected_vertebra}",
-                    )
+                for r, c in self.subplot_indices:
+                    self.plotter.subplot(r, c)
+                    if scalars is not None:
+                        mesh.point_data["Safety"] = scalars
+                        self.plotter.add_mesh(
+                            mesh,
+                            scalars="Safety",
+                            cmap=["#ef4444", "#f59e0b", "#94a3b8"],
+                            clim=[-1.0, 2.0],
+                            opacity=self.mesh_opacity,
+                            smooth_shading=True,
+                            specular=0.3,
+                            name=f"vertebra_mesh_{self.selected_vertebra}",
+                            show_scalar_bar=False,
+                        )
+                    else:
+                        self.plotter.add_mesh(
+                            mesh,
+                            color="#cbd5e1",
+                            opacity=self.mesh_opacity,
+                            smooth_shading=True,
+                            specular=0.3,
+                            name=f"vertebra_mesh_{self.selected_vertebra}",
+                        )
                 self.mesh_actor_names.append(f"vertebra_mesh_{self.selected_vertebra}")
 
         self.focus_camera()
@@ -913,42 +1051,54 @@ class ManualVisualizerWindow(QMainWindow):
     def focus_camera(self):
         if self.plotter is None:
             return
-        if self.selected_vertebra is None:
-            self.plotter.camera_position = "iso"
-            self.plotter.reset_camera()
-            return
-
+            
         verts = None
-        if self.selected_vertebra in self.vertebra_meshes:
-            verts = self.vertebra_meshes[self.selected_vertebra]["verts"]
-        else:
-            cropped_verts, _ = self.mesh_for_vertebra(self.selected_vertebra)
-            verts = cropped_verts
+        if self.selected_vertebra is not None:
+            if self.selected_vertebra in self.vertebra_meshes:
+                verts = self.vertebra_meshes[self.selected_vertebra]["verts"]
+            else:
+                cropped_verts, _ = self.mesh_for_vertebra(self.selected_vertebra)
+                verts = cropped_verts
 
-        indices = results_for_vertebra(self.adjusted_results, self.selected_vertebra)
-        bbox = bbox_for_results(self.adjusted_results, indices, padding=12.0)
-        points = []
+        bounds = None
         if verts is not None and len(verts) > 0:
-            points.append(np.asarray(verts, dtype=float))
-        if bbox is not None:
-            mins, maxs = bbox
-            corners = np.array(
-                [
-                    [mins[0], mins[1], mins[2]],
-                    [maxs[0], maxs[1], maxs[2]],
-                ],
-                dtype=float,
+            bounds = (
+                verts[:, 0].min(), verts[:, 0].max(),
+                verts[:, 1].min(), verts[:, 1].max(),
+                verts[:, 2].min(), verts[:, 2].max(),
             )
-            points.append(corners)
-        if points:
-            stacked = np.vstack(points)
-            self.plotter.reset_camera(bounds=(
-                stacked[:, 0].min(), stacked[:, 0].max(),
-                stacked[:, 1].min(), stacked[:, 1].max(),
-                stacked[:, 2].min(), stacked[:, 2].max(),
-            ))
+
+        # Loop through all active subplots to set bounding focuses and angles
+        for r, c in self.subplot_indices:
+            self.plotter.subplot(r, c)
+            if bounds is not None:
+                self.plotter.reset_camera(bounds=bounds)
+            else:
+                self.plotter.reset_camera()
+
+        # Apply specific locked surgical projections only in Quad-View
+        if len(self.subplot_indices) > 1:
+            # 1. Axial / Superior View (Looking down Z)
+            self.plotter.subplot(0, 0)
+            self.plotter.view_xy()
+            
+            # 2. Sagittal / Lateral View (Looking down X)
+            self.plotter.subplot(0, 1)
+            self.plotter.view_zy()
+            
+            # 3. Coronal / Anterior View (Looking down Y)
+            self.plotter.subplot(1, 0)
+            self.plotter.view_xz()
+            
+            # 4. Isometric 3D Interactive View
+            self.plotter.subplot(1, 1)
+            if bounds is None:
+                self.plotter.camera_position = "iso"
         else:
-            self.plotter.reset_camera()
+            # Single viewport: set to isometric/3D orbit
+            self.plotter.subplot(0, 0)
+            if bounds is None:
+                self.plotter.camera_position = "iso"
 
     def load_slider_state(self):
         if not self.screw_index_map:
@@ -960,6 +1110,14 @@ class ManualVisualizerWindow(QMainWindow):
                 slider.setValue(int(round(state[key] * 2.0)))
                 slider.blockSignals(False)
                 value_label.setText(f"{state[key]:.1f}")
+        
+        if hasattr(self, "preset_catalog_combo"):
+            self.preset_catalog_combo.blockSignals(True)
+            catalog_val = state.get("catalog_type", "Generic")
+            idx = self.preset_catalog_combo.findText(catalog_val)
+            if idx != -1:
+                self.preset_catalog_combo.setCurrentIndex(idx)
+            self.preset_catalog_combo.blockSignals(False)
         
         if hasattr(self, "preset_diam_combo"):
             self.preset_diam_combo.blockSignals(True)
@@ -1036,6 +1194,148 @@ class ManualVisualizerWindow(QMainWindow):
         except ValueError:
             pass
 
+    def preset_catalog_changed(self, text):
+        if self._updating_screw_combo or not self.screw_index_map:
+            return
+        self.states[self.current_index]["catalog_type"] = text
+        
+        if hasattr(self, "preset_diam_combo") and hasattr(self, "preset_len_combo"):
+            self.preset_diam_combo.blockSignals(True)
+            self.preset_len_combo.blockSignals(True)
+            if text == "Stryker":
+                self.preset_diam_combo.setCurrentText("6.5")
+                self.preset_len_combo.setCurrentText("45")
+                self.states[self.current_index]["diameter"] = 6.5
+                original_len = float(self.original_results[self.current_index].get("length", 40.0) or 40.0)
+                delta = 45.0 - original_len
+                self.states[self.current_index]["length_mm"] = delta
+            elif text == "Medtronic":
+                self.preset_diam_combo.setCurrentText("5.5")
+                self.preset_len_combo.setCurrentText("40")
+                self.states[self.current_index]["diameter"] = 5.5
+                original_len = float(self.original_results[self.current_index].get("length", 40.0) or 40.0)
+                delta = 40.0 - original_len
+                self.states[self.current_index]["length_mm"] = delta
+            elif text == "Globus":
+                self.preset_diam_combo.setCurrentText("7.0")
+                self.preset_len_combo.setCurrentText("50")
+                self.states[self.current_index]["diameter"] = 7.0
+                original_len = float(self.original_results[self.current_index].get("length", 40.0) or 40.0)
+                delta = 50.0 - original_len
+                self.states[self.current_index]["length_mm"] = delta
+            self.preset_diam_combo.blockSignals(False)
+            self.preset_len_combo.blockSignals(False)
+
+        delta = self.states[self.current_index]["length_mm"]
+        if "length_mm" in self.sliders:
+            slider, value_label = self.sliders["length_mm"]
+            slider.blockSignals(True)
+            slider.setValue(int(round(delta * 2.0)))
+            slider.blockSignals(False)
+            value_label.setText(f"{delta:.1f}")
+
+        self.recompute_results()
+        self.update_status()
+        self.update_values_panel()
+        self.refresh_screws()
+        self.refresh_scene()
+
+    def estimate_pullout_strength(self, entry, tip, diameter, length):
+        if self.volume_data is None or self.volume_affine is None:
+            return 0.0, 0.0
+        
+        res = orthonormal_basis(entry, tip)
+        if res is None:
+            return 0.0, 0.0
+        u_dir, n1, n2 = res
+        if u_dir is None or n1 is None or n2 is None:
+            return 0.0, 0.0
+            
+        u_vals = np.linspace(0.0, length, 20)
+        angles = np.linspace(0, 2 * np.pi, 8, endpoint=False)
+        r_vals = np.linspace(diameter / 2.0 - 0.5, diameter / 2.0 + 1.5, 3)
+        
+        sampled_hus = []
+        inv_affine = np.linalg.inv(self.volume_affine)
+        sh = self.volume_data.shape
+        
+        for u in u_vals:
+            for theta in angles:
+                for r in r_vals:
+                    pt = entry + u * u_dir + r * (np.cos(theta) * n1 + np.sin(theta) * n2)
+                    vpt = (pt @ inv_affine[:3, :3].T) + inv_affine[:3, 3]
+                    x = int(np.round(vpt[0]))
+                    y = int(np.round(vpt[1]))
+                    z = int(np.round(vpt[2]))
+                    if 0 <= x < sh[0] and 0 <= y < sh[1] and 0 <= z < sh[2]:
+                        sampled_hus.append(self.volume_data[x, y, z])
+                        
+        if not sampled_hus:
+            return 0.0, 0.0
+        mean_hu = float(np.mean(sampled_hus))
+        strength = max(0.0, 2.5 * mean_hu + 550.0)
+        return strength, mean_hu
+
+    def update_reformat_slice(self):
+        if not self.adjusted_results or self.current_index >= len(self.adjusted_results):
+            self.bone_quality_badge.setText("NO ACTIVE SCREW")
+            self.hu_progress.setValue(0)
+            self.po_progress.setValue(0)
+            self.recommendation_box.setText("Please select a screw.")
+            return
+            
+        result = self.adjusted_results[self.current_index]
+        entry = np.asarray(result["entry"], dtype=float)
+        tip = np.asarray(result["tip"], dtype=float)
+        diameter = float(result.get("diameter", 5.5) or 5.5)
+        length = float(result.get("length", 40.0) or 40.0)
+        
+        strength, mean_hu = self.estimate_pullout_strength(entry, tip, diameter, length)
+        
+        self.hu_progress.setValue(int(round(mean_hu)))
+        self.po_progress.setValue(int(round(strength)))
+        
+        if mean_hu > 150.0:
+            self.bone_quality_badge.setText("🟢 STRONG / HEALTHY BONE")
+            self.bone_quality_badge.setStyleSheet(
+                "font-size: 13px; font-weight: 900; color: #ffffff; background: #059669; padding: 10px; border-radius: 6px; border: 1px solid #10b981;"
+            )
+            self.hu_progress.setStyleSheet(
+                "QProgressBar { border: 1px solid #3f4a59; border-radius: 4px; text-align: center; color: white; background: #0d1117; height: 24px; font-weight: 800; }"
+                "QProgressBar::chunk { background-color: #10b981; border-radius: 3px; }"
+            )
+            self.recommendation_box.setText(
+                "<b>Clinical Analysis:</b><br>"
+                "Excellent bone mineral density with optimal screw purchase. Standard titanium screw placement is highly stable. "
+                "No augmentation required."
+            )
+        elif mean_hu >= 100.0:
+            self.bone_quality_badge.setText("🟡 OSTEOPENIC BONE")
+            self.bone_quality_badge.setStyleSheet(
+                "font-size: 13px; font-weight: 900; color: #111827; background: #d97706; padding: 10px; border-radius: 6px; border: 1px solid #f59e0b;"
+            )
+            self.hu_progress.setStyleSheet(
+                "QProgressBar { border: 1px solid #3f4a59; border-radius: 4px; text-align: center; color: #111827; background: #0d1117; height: 24px; font-weight: 800; }"
+                "QProgressBar::chunk { background-color: #f59e0b; border-radius: 3px; }"
+            )
+            self.recommendation_box.setText(
+                "<b>Clinical Analysis:</b><br>"
+                "Moderately reduced density. Corridors provide solid fixation, but insertion torque should be monitored closely. "
+                "Standard titanium pedicle screw purchase is acceptable."
+            )
+        else:
+            self.bone_quality_badge.setText("🔴 OSTEOPOROTIC / WEAK BONE")
+            self.bone_quality_badge.setStyleSheet(
+                "font-size: 13px; font-weight: 900; color: #ffffff; background: #dc2626; padding: 10px; border-radius: 6px; border: 1px solid #ef4444;"
+            )
+            self.hu_progress.setStyleSheet(
+                "QProgressBar { border: 1px solid #3f4a59; border-radius: 4px; text-align: center; color: white; background: #0d1117; height: 24px; font-weight: 800; }"
+                "QProgressBar::chunk { background-color: #ef4444; border-radius: 3px; }"
+            )
+            self.recommendation_box.setText(
+                "<b>WARNING:</b> Low density. High risk of screw loosening. PMMA bone cement augmentation or fenestrated screw insertion is strongly recommended."
+            )
+
     def nudge_slider(self, slider, delta):
         slider.setValue(int(np.clip(slider.value() + delta, slider.minimum(), slider.maximum())))
 
@@ -1111,18 +1411,31 @@ class ManualVisualizerWindow(QMainWindow):
             self.level_summary_label.show()
         else:
             self.level_summary_label.hide()
+        self.update_reformat_slice()
 
-    def refresh_screws(self):
+    def refresh_screws(self, force_all=False):
         if self.plotter is None:
             return
-        for name in self.screw_actor_names:
-            self.plotter.remove_actor(name, reset_camera=False)
-        self.screw_actor_names = []
+            
+        if force_all:
+            for name in self.screw_actor_names:
+                for r, c in self.subplot_indices:
+                    self.plotter.subplot(r, c)
+                    self.plotter.remove_actor(name, reset_camera=False)
+            self.screw_actor_names = []
+            indices_to_build = self.visible_screw_indices()
+        else:
+            for r, c in self.subplot_indices:
+                self.plotter.subplot(r, c)
+                self.plotter.remove_actor(f"screw_path_{self.current_index}", reset_camera=False)
+                self.plotter.remove_actor(f"screw_body_{self.current_index}", reset_camera=False)
+            indices_to_build = [self.current_index]
 
         visible = set(self.visible_screw_indices())
-        for index, result in enumerate(self.adjusted_results):
+        for index in indices_to_build:
             if index not in visible:
                 continue
+            result = self.adjusted_results[index]
             entry = np.asarray(result["entry"], dtype=float)
             tip = np.asarray(result["tip"], dtype=float)
             status, color, _, _ = evaluate_screw_safety(result, self.seg_data, self.seg_affine)
@@ -1133,27 +1446,35 @@ class ManualVisualizerWindow(QMainWindow):
 
             line = pv.Line(entry, tip) if pv is not None else None
             if line is not None:
-                self.plotter.add_mesh(line, color=color, line_width=5 if selected else 3, name=line_name)
-                self.screw_actor_names.append(line_name)
+                for r, c in self.subplot_indices:
+                    self.plotter.subplot(r, c)
+                    self.plotter.add_mesh(line, color=color, line_width=5 if selected else 3, name=line_name)
+                if line_name not in self.screw_actor_names:
+                    self.screw_actor_names.append(line_name)
 
             # Generate advanced high-fidelity procedural hardware model
+            catalog_val = self.states[index].get("catalog_type", "Generic")
             screw_mesh = load_and_transform_screw(
                 entry,
                 tip,
                 diameter,
                 float(result.get("length", 40.0)),
+                catalog_type=catalog_val,
             )
             if screw_mesh is not None:
-                self.plotter.add_mesh(
-                    screw_mesh,
-                    color=color,
-                    opacity=1.0 if selected else 0.90,
-                    smooth_shading=True,
-                    specular=0.55,       # High specularity to let simulated threads catch realistic light highlights
-                    specular_power=15,
-                    name=screw_name,
-                )
-                self.screw_actor_names.append(screw_name)
+                for r, c in self.subplot_indices:
+                    self.plotter.subplot(r, c)
+                    self.plotter.add_mesh(
+                        screw_mesh,
+                        color=color,
+                        opacity=1.0 if selected else 0.90,
+                        smooth_shading=True,
+                        specular=0.55,       # High specularity to let simulated threads catch realistic light highlights
+                        specular_power=15,
+                        name=screw_name,
+                    )
+                if screw_name not in self.screw_actor_names:
+                    self.screw_actor_names.append(screw_name)
 
         self.plotter.render()
 
